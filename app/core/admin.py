@@ -1,7 +1,115 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
+from django.contrib.auth.forms import UserCreationForm
+from django import forms
+from django.db import models
 from .models import UserProfile
+from .mixins import PatientAccessMixin, AdminOnlyMixin
+
+
+class CustomUserCreationForm(UserCreationForm):
+    """Enhanced user creation form with role assignment."""
+
+    role = forms.ChoiceField(
+        choices=UserProfile.ROLE_CHOICES,
+        required=True,
+        help_text="Select the user's role in the system",
+        widget=forms.Select(attrs={"onchange": "toggleRequiredFields()"}),
+    )
+    department = forms.CharField(
+        max_length=100,
+        required=False,
+        help_text="Department or ward assignment (required for doctors and nurses)",
+        widget=forms.TextInput(attrs={"class": "role-dependent"}),
+    )
+    license_number = forms.CharField(
+        max_length=50,
+        required=False,
+        help_text="Professional license number (required for medical staff)",
+        widget=forms.TextInput(attrs={"class": "role-dependent"}),
+    )
+    phone = forms.CharField(
+        max_length=20, required=False, help_text="Contact phone number"
+    )
+
+    class Meta:
+        model = User
+        fields = ("username", "first_name", "last_name", "email")
+
+    class Media:
+        js = ("admin/js/role_validation.js",)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Set initial field visibility based on data if available
+        if "data" in kwargs and kwargs["data"].get("role") == "patient":
+            # For patients, remove license_number field entirely
+            if "license_number" in self.fields:
+                del self.fields["license_number"]
+
+        # Add help text to role field to guide admin users
+        self.fields["role"].help_text = (
+            "Select role type. Fields below will be shown/hidden based on selection. "
+            "Patients don't require professional credentials."
+        )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        role = cleaned_data.get("role")
+        department = cleaned_data.get("department")
+        license_number = cleaned_data.get("license_number")
+
+        if not role:
+            raise forms.ValidationError("Role selection is required.")
+
+        # Skip license validation for patients
+        if role == "patient":
+            return cleaned_data
+
+        # Validate required fields based on role for non-patients
+        errors = {}
+
+        if role in ["doctor", "nurse", "pharmacy"] and not license_number:
+            errors["license_number"] = "License number is required for medical staff."
+
+        if role in ["doctor", "nurse"] and not department:
+            errors["department"] = "Department is required for doctors and nurses."
+
+        if errors:
+            raise forms.ValidationError(errors)
+
+        # Ensure role is preserved in cleaned_data
+        cleaned_data["role"] = role
+        return cleaned_data
+
+    def save(self, commit=True):
+        user = super().save(commit=commit)
+        if commit:
+            # Create or update user profile
+            profile, created = UserProfile.objects.get_or_create(user=user)
+
+            # Set all profile fields from form data
+            role = self.cleaned_data["role"]
+            profile.role = role
+            profile.department = self.cleaned_data.get("department", "")
+            profile.phone = self.cleaned_data.get("phone", "")
+
+            # Only set license_number for non-patients and if field exists
+            if (
+                role != "patient"
+                and "license_number" in self.cleaned_data
+                and self.cleaned_data.get("license_number")
+            ):
+                profile.license_number = self.cleaned_data["license_number"]
+            elif role == "patient":
+                # Ensure patients don't have license numbers
+                profile.license_number = ""
+
+            # Save profile - this will trigger group assignment
+            profile.save()
+
+        return user
 
 
 class UserProfileInline(admin.StackedInline):
@@ -11,28 +119,223 @@ class UserProfileInline(admin.StackedInline):
     can_delete = False
     verbose_name_plural = "Profile"
 
-    fieldsets = (
-        ("Role Information", {"fields": ("role", "department")}),
-        ("Professional Details", {"fields": ("license_number", "phone")}),
-    )
+    def get_fieldsets(self, request, obj=None):
+        """Customize fieldsets based on role - hide license for patients."""
+        base_fieldsets = [
+            ("Role Information", {"fields": ("role", "department")}),
+        ]
+
+        # Determine if we're dealing with a patient
+        is_patient = False
+        if obj and hasattr(obj, "profile"):
+            is_patient = obj.profile.role == "patient"
+        elif request.POST.get("role") == "patient":
+            is_patient = True
+
+        # Add appropriate contact/professional sections
+        if is_patient:
+            # Patients only get contact information, no license field
+            base_fieldsets.append(("Contact Information", {"fields": ("phone",)}))
+        else:
+            # Non-patients get professional details including license
+            base_fieldsets.append(
+                ("Professional Details", {"fields": ("license_number", "phone")})
+            )
+
+        return base_fieldsets
+
+    def get_readonly_fields(self, request, obj=None):
+        """Make role field readonly for non-admins."""
+        readonly_fields = []
+
+        if not request.user.is_superuser and hasattr(request.user, "profile"):
+            if request.user.profile.role != "admin":
+                readonly_fields.append("role")
+
+        return readonly_fields
+
+    def get_exclude(self, request, obj=None):
+        """Exclude license field for patients."""
+        exclude = []
+
+        # Determine if we're dealing with a patient
+        is_patient = False
+        if obj and hasattr(obj, "profile"):
+            is_patient = obj.profile.role == "patient"
+        elif request.POST.get("role") == "patient":
+            is_patient = True
+
+        # Exclude license_number for patients
+        if is_patient:
+            exclude.append("license_number")
+
+        return exclude
 
 
-class UserAdmin(BaseUserAdmin):
-    """Custom user admin with profile inline."""
+class UserAdmin(AdminOnlyMixin, BaseUserAdmin):
+    """Custom user admin with profile inline and role-based access - ADMIN ONLY."""
 
     inlines = (UserProfileInline,)
+    add_form = CustomUserCreationForm
+
+    # Simplified add_fieldsets - only User model fields
+    add_fieldsets = (
+        (
+            None,
+            {
+                "classes": ("wide",),
+                "fields": (
+                    "username",
+                    "first_name",
+                    "last_name",
+                    "email",
+                    "password1",
+                    "password2",
+                ),
+            },
+        ),
+        (
+            "Role Assignment",
+            {
+                "classes": ("wide",),
+                "fields": ("role", "department", "license_number", "phone"),
+                "description": "Assign role and professional details for the new user.",
+            },
+        ),
+    )
+
+    def has_module_permission(self, request):
+        """Allow admin users and superusers to access user management module."""
+        # Always allow superusers
+        if request.user.is_superuser:
+            return True
+
+        # Allow users with admin role
+        if hasattr(request.user, "profile") and request.user.profile.role == "admin":
+            return True
+
+        # Fall back to default Django permission check
+        return super().has_module_permission(request)
+
+    def get_form(self, request, obj=None, **kwargs):
+        """Use custom form for adding users."""
+        if obj is None:  # Adding new user
+            kwargs["form"] = self.add_form
+        return super().get_form(request, obj, **kwargs)
+
+    def get_fieldsets(self, request, obj=None):
+        """Use add_fieldsets for new users, regular fieldsets for existing users."""
+        if not obj:
+            return self.add_fieldsets
+        return super().get_fieldsets(request, obj)
+
+    def add_view(self, request, form_url="", extra_context=None):
+        """Override add view to handle custom form processing."""
+        return super().add_view(request, form_url, extra_context)
 
     def get_inline_instances(self, request, obj=None):
         if not obj:
             return list()
         return super().get_inline_instances(request, obj)
 
+    def save_model(self, request, obj, form, change):
+        """Override save_model to handle profile creation properly."""
+        super().save_model(request, obj, form, change)
 
-class UserProfileAdmin(admin.ModelAdmin):
-    """Admin interface for user profiles."""
+        # For new users, the form's save method should have already created the profile
+        # Ensure the profile exists and has the correct data
+        if not change and not hasattr(obj, "profile"):
+            # This shouldn't happen, but just in case
+            from core.models import UserProfile
 
-    list_display = ("user", "role", "department", "license_number", "created_at")
-    list_filter = ("role", "department", "created_at")
+            UserProfile.objects.get_or_create(user=obj, defaults={"role": "patient"})
+
+    def get_queryset(self, request):
+        """Filter users based on role permissions."""
+        qs = super().get_queryset(request)
+
+        # Always allow superusers to see all users
+        if request.user.is_superuser:
+            return qs
+
+        # Allow users with admin role to see all users
+        if hasattr(request.user, "profile"):
+            if request.user.profile.role == "admin":
+                return qs
+
+        # All other users should not access user management at all
+        return qs.none()
+
+
+class UserProfileAdmin(PatientAccessMixin, admin.ModelAdmin):
+    """Admin interface for user profiles with role-based filtering."""
+
+    def get_queryset(self, request):
+        """Filter profiles based on role permissions."""
+        qs = super().get_queryset(request)
+
+        if request.user.is_superuser:
+            return qs
+
+        if hasattr(request.user, "profile"):
+            if request.user.profile.role == "admin":
+                # Admins can see all profiles
+                return qs
+            else:
+                # All other users can only see their own profile
+                return qs.filter(user=request.user)
+
+        return qs.none()
+
+    def get_list_display(self, request):
+        """Customize list display based on user role."""
+        base_display = ["user", "role"]
+
+        if hasattr(request.user, "profile"):
+            user_role = request.user.profile.role
+
+            if user_role == "patient":
+                # Patients only see basic info
+                return ["user", "role", "phone", "created_at"]
+            elif user_role in ["admin"]:
+                # Admins see everything
+                return [
+                    "user",
+                    "role",
+                    "department",
+                    "license_number",
+                    "is_complete",
+                    "created_at",
+                ]
+            elif user_role in ["doctor", "nurse", "pharmacy"]:
+                # Medical staff see relevant professional info
+                return ["user", "role", "department", "license_number", "created_at"]
+
+        # Default view for superusers
+        return [
+            "user",
+            "role",
+            "department",
+            "license_number",
+            "is_complete",
+            "created_at",
+        ]
+
+    def get_list_filter(self, request):
+        """Customize list filters based on user role."""
+        if hasattr(request.user, "profile"):
+            user_role = request.user.profile.role
+
+            if user_role == "patient":
+                # Patients don't need filters since they only see their own profile
+                return []
+            elif user_role in ["admin"]:
+                return ["role", "department", "created_at"]
+            else:
+                return ["role", "department"]
+
+        return ["role", "department", "created_at"]
+
     search_fields = (
         "user__username",
         "user__first_name",
@@ -41,37 +344,137 @@ class UserProfileAdmin(admin.ModelAdmin):
     )
     readonly_fields = ("created_at", "updated_at")
 
-    fieldsets = (
-        ("User Information", {"fields": ("user",)}),
-        ("Role & Department", {"fields": ("role", "department")}),
-        ("Professional Details", {"fields": ("license_number", "phone")}),
-        (
-            "Timestamps",
-            {"fields": ("created_at", "updated_at"), "classes": ("collapse",)},
-        ),
-    )
+    def get_fieldsets(self, request, obj=None):
+        """Customize fieldsets based on user role."""
+        base_fieldsets = [
+            ("User Information", {"fields": ("user",)}),
+            ("Role & Department", {"fields": ("role", "department")}),
+        ]
 
-    def get_queryset(self, request):
-        """Filter profiles based on user role."""
-        qs = super().get_queryset(request)
+        # Determine if we're dealing with a patient
+        is_patient = False
+        if obj:
+            is_patient = obj.role == "patient"
+        elif request.POST.get("role") == "patient":
+            is_patient = True
 
-        # Admin users can see all profiles
-        if request.user.is_superuser:
-            return qs
+        # Add appropriate contact/professional sections
+        if is_patient:
+            # Patients only get contact information, no license field
+            base_fieldsets.append(("Contact Information", {"fields": ("phone",)}))
+        else:
+            # Medical staff and others get professional details
+            if obj and obj.role in ["doctor", "nurse", "pharmacy"]:
+                base_fieldsets.append(
+                    ("Professional Details", {"fields": ("license_number", "phone")})
+                )
+            elif not obj:  # For add form, show all fields with help text
+                base_fieldsets.append(
+                    (
+                        "Professional Details",
+                        {
+                            "fields": ("license_number", "phone"),
+                            "description": "License number required for medical staff (doctors, nurses, pharmacy)",
+                        },
+                    )
+                )
+            else:  # For other roles that aren't patients
+                base_fieldsets.append(("Contact Information", {"fields": ("phone",)}))
 
-        # Regular users can only see their own profile
-        return qs.filter(user=request.user)
+        # Add timestamps
+        base_fieldsets.append(
+            (
+                "Timestamps",
+                {"fields": ("created_at", "updated_at"), "classes": ("collapse",)},
+            )
+        )
+
+        return base_fieldsets
+
+    def save_model(self, request, obj, form, change):
+        """Override save to ensure validation is enforced."""
+        try:
+            obj.full_clean()  # This will call the model's clean() method
+            super().save_model(request, obj, form, change)
+        except ValidationError as e:
+            # Add the validation errors to the form
+            for field, errors in e.error_dict.items():
+                for error in errors:
+                    form.add_error(field, error)
+
+    def get_exclude(self, request, obj=None):
+        """Exclude fields based on user role."""
+        exclude = []
+
+        # Determine if we're dealing with a patient
+        is_patient = False
+        if obj:
+            is_patient = obj.role == "patient"
+        elif request.POST.get("role") == "patient":
+            is_patient = True
+
+        # Exclude license_number for patients
+        if is_patient:
+            exclude.append("license_number")
+
+        return exclude
+
+    def get_readonly_fields(self, request, obj=None):
+        """Customize readonly fields based on user role."""
+        readonly_fields = list(self.readonly_fields)
+
+        if not request.user.is_superuser and hasattr(request.user, "profile"):
+            user_role = request.user.profile.role
+
+            # Patients and non-admin users can't change certain fields
+            if user_role == "patient":
+                readonly_fields.extend(["user", "role", "department"])
+                # Patients shouldn't see license_number field at all
+                if obj and obj.role != "patient":
+                    readonly_fields.append("license_number")
+            elif user_role != "admin":
+                readonly_fields.append("role")
+
+        return readonly_fields
+
+    def filter_queryset_by_role(self, request, queryset, role):
+        """Apply role-specific filtering."""
+        if role == "admin":
+            # Admins can see all profiles
+            return queryset
+        else:
+            # All other users can only see their own profile
+            return queryset.filter(user=request.user)
 
     def has_add_permission(self, request):
-        """Only superusers can add new profiles."""
-        return request.user.is_superuser
+        """Only admins and superusers can add user profiles directly."""
+        if not super().has_add_permission(request):
+            return False
+        if request.user.is_superuser:
+            return True
+        if hasattr(request.user, "profile"):
+            return request.user.profile.role == "admin"
+        return False
 
     def has_delete_permission(self, request, obj=None):
-        """Only superusers can delete profiles."""
-        return request.user.is_superuser
+        """Only admins and superusers can delete profiles."""
+        if not super().has_delete_permission(request, obj):
+            return False
+        if request.user.is_superuser:
+            return True
+        if hasattr(request.user, "profile"):
+            return request.user.profile.role == "admin"
+        return False
+
+    def is_complete(self, obj):
+        """Display profile completion status."""
+        return obj.is_complete
+
+    is_complete.boolean = True
+    is_complete.short_description = "Profile Complete"
 
 
-# Re-register UserAdmin
+# Re-register UserAdmin with role-based functionality
 admin.site.unregister(User)
 admin.site.register(User, UserAdmin)
 admin.site.register(UserProfile, UserProfileAdmin)
