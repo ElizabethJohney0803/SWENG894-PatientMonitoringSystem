@@ -22,6 +22,10 @@ python manage.py migrate
 
 echo "Migrations completed successfully!"
 
+# Set up groups and permissions
+echo "Setting up groups and permissions..."
+python manage.py setup_groups
+
 # Create superuser if it doesn't exist
 echo "Creating superuser if not exists..."
 python manage.py shell -c "
