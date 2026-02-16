@@ -4,7 +4,7 @@ from django.contrib.auth.models import User
 from django.contrib.auth.forms import UserCreationForm
 from django import forms
 from django.db import models
-from .models import UserProfile
+from .models import UserProfile, Patient, EmergencyContact
 from .mixins import PatientAccessMixin, AdminOnlyMixin
 
 
@@ -472,6 +472,226 @@ class UserProfileAdmin(PatientAccessMixin, admin.ModelAdmin):
 
     is_complete.boolean = True
     is_complete.short_description = "Profile Complete"
+
+
+class EmergencyContactInline(admin.StackedInline):
+    """Inline admin for emergency contacts."""
+
+    model = EmergencyContact
+    extra = 1
+    max_num = 5
+    fields = [
+        "name",
+        "relationship",
+        "phone_primary",
+        "phone_secondary",
+        "email",
+        "is_primary_contact",
+        "notes",
+    ]
+
+    def get_readonly_fields(self, request, obj=None):
+        """Make fields readonly for patients viewing their own records."""
+        if hasattr(request.user, "profile") and request.user.profile.role == "patient":
+            if obj and obj.user_profile != request.user.profile:
+                # Patient trying to view another patient's data
+                return list(self.fields)
+        return []
+
+
+@admin.register(Patient)
+class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
+    """Admin interface for patient records with role-based access."""
+
+    list_display = [
+        "medical_id",
+        "get_patient_name",
+        "age",
+        "gender",
+        "phone_primary",
+        "city",
+        "state",
+        "created_at",
+    ]
+    list_filter = ["gender", "blood_type", "state", "created_at", "updated_at"]
+    search_fields = [
+        "medical_id",
+        "user_profile__user__first_name",
+        "user_profile__user__last_name",
+        "user_profile__user__username",
+        "phone_primary",
+        "city",
+        "insurance_number",
+    ]
+    readonly_fields = ["medical_id", "age", "created_at", "updated_at"]
+
+    fieldsets = (
+        ("Patient Identity", {"fields": ("user_profile", "medical_id")}),
+        (
+            "Personal Information",
+            {"fields": ("date_of_birth", "gender", "blood_type", "insurance_number")},
+        ),
+        (
+            "Contact Information",
+            {"fields": ("phone_primary", "phone_secondary", "email_personal")},
+        ),
+        (
+            "Address",
+            {
+                "fields": (
+                    "address_line1",
+                    "address_line2",
+                    "city",
+                    "state",
+                    "postal_code",
+                    "country",
+                )
+            },
+        ),
+        (
+            "System Information",
+            {"fields": ("created_at", "updated_at"), "classes": ("collapse",)},
+        ),
+    )
+
+    inlines = [EmergencyContactInline]
+
+    def get_patient_name(self, obj):
+        """Display patient's full name."""
+        return obj.user_profile.user.get_full_name() or obj.user_profile.user.username
+
+    get_patient_name.short_description = "Patient Name"
+    get_patient_name.admin_order_field = "user_profile__user__last_name"
+
+    def age(self, obj):
+        """Display patient's age."""
+        return obj.age
+
+    age.short_description = "Age"
+
+    def get_queryset(self, request):
+        """Filter patients based on user role."""
+        qs = super().get_queryset(request)
+
+        # Superusers see everything
+        if request.user.is_superuser:
+            return qs
+
+        # Check if user has a profile
+        if not hasattr(request.user, "profile"):
+            return qs.none()
+
+        user_role = request.user.profile.role
+
+        # Role-based filtering
+        if user_role == "admin":
+            # Admins can see all patients
+            return qs
+        elif user_role == "patient":
+            # Patients can only see their own record
+            return qs.filter(user_profile=request.user.profile)
+        elif user_role in ["doctor", "nurse", "pharmacy"]:
+            # Medical staff can see all patients
+            return qs
+        else:
+            # Other roles see nothing
+            return qs.none()
+
+    def get_readonly_fields(self, request, obj=None):
+        """Set readonly fields based on user role."""
+        readonly_fields = list(self.readonly_fields)
+
+        if hasattr(request.user, "profile") and request.user.profile.role == "patient":
+            # Patients can only edit limited fields
+            if obj and obj.user_profile != request.user.profile:
+                # Patient trying to edit another patient's record - make all readonly
+                return [field.name for field in self.model._meta.fields]
+            else:
+                # Patient editing their own record - some fields editable
+                readonly_fields.extend(["user_profile", "date_of_birth", "gender"])
+
+        return readonly_fields
+
+    def has_add_permission(self, request):
+        """Control who can add new patient records."""
+        # Use the permission from PatientAccessMixin
+        return super().has_add_permission(request)
+
+    def has_change_permission(self, request, obj=None):
+        """Control who can change patient records."""
+        if not super().has_change_permission(request, obj):
+            return False
+
+        # Additional checks for patients
+        if hasattr(request.user, "profile") and request.user.profile.role == "patient":
+            if obj and obj.user_profile != request.user.profile:
+                return False  # Patients can't edit other patients' records
+
+        return True
+
+    def has_delete_permission(self, request, obj=None):
+        """Control who can delete patient records."""
+        # Use the permission from PatientAccessMixin
+        return super().has_delete_permission(request, obj)
+
+
+@admin.register(EmergencyContact)
+class EmergencyContactAdmin(admin.ModelAdmin):
+    """Admin interface for emergency contacts."""
+
+    list_display = [
+        "name",
+        "patient",
+        "relationship",
+        "phone_primary",
+        "is_primary_contact",
+    ]
+    list_filter = ["relationship", "is_primary_contact", "created_at"]
+    search_fields = [
+        "name",
+        "patient__medical_id",
+        "patient__user_profile__user__first_name",
+        "patient__user_profile__user__last_name",
+    ]
+    readonly_fields = ["created_at", "updated_at"]
+
+    fieldsets = (
+        ("Contact Information", {"fields": ("patient", "name", "relationship")}),
+        ("Phone & Email", {"fields": ("phone_primary", "phone_secondary", "email")}),
+        ("Status & Notes", {"fields": ("is_primary_contact", "notes")}),
+        (
+            "System Information",
+            {"fields": ("created_at", "updated_at"), "classes": ("collapse",)},
+        ),
+    )
+
+    def get_queryset(self, request):
+        """Filter emergency contacts based on user role."""
+        qs = super().get_queryset(request)
+
+        # Superusers see everything
+        if request.user.is_superuser:
+            return qs
+
+        # Check if user has a profile
+        if not hasattr(request.user, "profile"):
+            return qs.none()
+
+        user_role = request.user.profile.role
+
+        # Role-based filtering
+        if user_role == "admin":
+            # Admins can see all emergency contacts
+            return qs
+        elif user_role == "patient":
+            # Patients can only see their own emergency contacts
+            return qs.filter(patient__user_profile=request.user.profile)
+        elif user_role in ["doctor", "nurse", "pharmacy"]:
+            # Medical staff can see all emergency contacts
+            return qs
+        else:
+            # Other roles see nothing
+            return qs.none()
 
 
 # Re-register UserAdmin with role-based functionality
