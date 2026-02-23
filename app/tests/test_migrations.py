@@ -8,6 +8,7 @@ import os
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "patient_monitoring_system.settings")
 
 import django
+
 django.setup()
 
 import pytest
@@ -30,10 +31,12 @@ class TestPatientMigrations:
         """Test that Patient migration creates required database tables."""
         # Check that Patient table exists
         with connection.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT name FROM sqlite_master 
                 WHERE type='table' AND name='core_patient';
-            """)
+            """
+            )
             result = cursor.fetchone()
             assert result is not None, "Patient table was not created by migration"
 
@@ -41,28 +44,27 @@ class TestPatientMigrations:
         """Test that EmergencyContact migration creates required database tables."""
         # Check that EmergencyContact table exists
         with connection.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT name FROM sqlite_master 
                 WHERE type='table' AND name='core_emergencycontact';
-            """)
+            """
+            )
             result = cursor.fetchone()
-            assert result is not None, "EmergencyContact table was not created by migration"
+            assert (
+                result is not None
+            ), "EmergencyContact table was not created by migration"
 
     def test_patient_foreign_key_constraints(self, create_groups):
         """Test that foreign key constraints are properly created in migration."""
         # Create test data to verify foreign key relationships
         user = User.objects.create_user(
-            username="fk_test", 
-            first_name="FK", 
-            last_name="Test", 
-            password="pass"
+            username="fk_test", first_name="FK", last_name="Test", password="pass"
         )
         profile = UserProfile.objects.create(
-            user=user, 
-            role="patient", 
-            phone="555-0000"
+            user=user, role="patient", phone="555-0000"
         )
-        
+
         patient = Patient.objects.create(
             user_profile=profile,
             date_of_birth=date(1990, 1, 1),
@@ -71,17 +73,17 @@ class TestPatientMigrations:
             city="FK City",
             state="CA",
             postal_code="12345",
-            phone_primary="555-1111"
+            phone_primary="555-1111",
         )
-        
+
         # Test that foreign key relationship works
         assert patient.user_profile == profile
         assert profile.patient_record == patient
-        
+
         # Test cascade behavior
         profile_id = profile.id
         profile.delete()
-        
+
         # Patient should be deleted due to CASCADE
         assert not Patient.objects.filter(user_profile_id=profile_id).exists()
 
@@ -95,24 +97,24 @@ class TestPatientMigrations:
             city="Test City",
             state="NY",
             postal_code="54321",
-            phone_primary="555-2222"
+            phone_primary="555-2222",
         )
-        
+
         contact = EmergencyContact.objects.create(
             patient=patient,
             name="FK Test Contact",
             relationship="parent",
-            phone_primary="555-3333"
+            phone_primary="555-3333",
         )
-        
+
         # Test foreign key relationship
         assert contact.patient == patient
         assert contact in patient.emergency_contacts.all()
-        
+
         # Test cascade deletion
         patient_id = patient.id
         patient.delete()
-        
+
         # Emergency contact should be deleted due to CASCADE
         assert not EmergencyContact.objects.filter(patient_id=patient_id).exists()
 
@@ -132,9 +134,9 @@ class TestPatientMigrations:
             country="United States",
             phone_primary="555-4444",
             phone_secondary="555-5555",
-            email_personal="migration@test.com"
+            email_personal="migration@test.com",
         )
-        
+
         # Verify all fields are accessible (indicating they exist in database)
         patient.refresh_from_db()
         assert patient.medical_id is not None
@@ -164,9 +166,9 @@ class TestPatientMigrations:
             city="Emergency City",
             state="TX",
             postal_code="78901",
-            phone_primary="555-6666"
+            phone_primary="555-6666",
         )
-        
+
         contact = EmergencyContact.objects.create(
             patient=patient,
             name="Emergency Field Test",
@@ -175,9 +177,9 @@ class TestPatientMigrations:
             phone_secondary="555-8888",
             email="emergency@field.test",
             is_primary_contact=True,
-            notes="Field test for migration"
+            notes="Field test for migration",
         )
-        
+
         # Verify all fields are accessible
         contact.refresh_from_db()
         assert contact.patient == patient
@@ -202,20 +204,15 @@ class TestPatientMigrations:
             city="City1",
             state="CA",
             postal_code="11111",
-            phone_primary="555-1111"
+            phone_primary="555-1111",
         )
-        
+
         # Create second patient with same user profile should fail
-        user2 = User.objects.create_user(
-            username="unique_test2",
-            password="pass"
-        )
+        user2 = User.objects.create_user(username="unique_test2", password="pass")
         profile2 = UserProfile.objects.create(
-            user=user2,
-            role="patient", 
-            phone="555-2222"
+            user=user2, role="patient", phone="555-2222"
         )
-        
+
         patient2 = Patient.objects.create(
             user_profile=profile2,
             date_of_birth=date(1991, 2, 2),
@@ -224,12 +221,12 @@ class TestPatientMigrations:
             city="City2",
             state="NY",
             postal_code="22222",
-            phone_primary="555-3333"
+            phone_primary="555-3333",
         )
-        
+
         # Medical IDs should be unique
         assert patient1.medical_id != patient2.medical_id
-        
+
         # UserProfile relationships should be unique (OneToOne)
         assert patient1.user_profile != patient2.user_profile
 
@@ -246,12 +243,12 @@ class TestPatientMigrations:
                 city="Choice City",
                 state="CA",
                 postal_code="12345",
-                phone_primary="555-1111"
+                phone_primary="555-1111",
             )
             # Should not raise exception during validation
             patient.full_clean()
-        
-        # Test valid blood type choices  
+
+        # Test valid blood type choices
         valid_blood_types = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"]
         for blood_type in valid_blood_types:
             patient = Patient(
@@ -261,9 +258,9 @@ class TestPatientMigrations:
                 blood_type=blood_type,
                 address_line1="Blood Type Test",
                 city="Test City",
-                state="CA", 
+                state="CA",
                 postal_code="12345",
-                phone_primary="555-2222"
+                phone_primary="555-2222",
             )
             # Should not raise exception during validation
             patient.full_clean()
@@ -272,20 +269,24 @@ class TestPatientMigrations:
         """Test that database indexes from migration are created properly."""
         with connection.cursor() as cursor:
             # Check for medical_id index (unique constraint creates index)
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT name FROM sqlite_master 
                 WHERE type='index' AND tbl_name='core_patient'
                 AND name LIKE '%medical_id%';
-            """)
+            """
+            )
             result = cursor.fetchone()
             assert result is not None, "Medical ID index not found"
-            
+
             # Check for user_profile index (OneToOne creates index)
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT name FROM sqlite_master 
                 WHERE type='index' AND tbl_name='core_patient'  
                 AND name LIKE '%user_profile_id%';
-            """)
+            """
+            )
             result = cursor.fetchone()
             assert result is not None, "UserProfile foreign key index not found"
 
@@ -301,16 +302,16 @@ class TestMigrationIntegration:
         # This test verifies that the migration system is working
         # Since we're in a test environment, migrations have already run
         # We can verify this by checking that models are accessible
-        
+
         # Try to access all model classes
         assert Patient is not None
         assert EmergencyContact is not None
         assert UserProfile is not None
-        
+
         # Verify models are properly registered with Django
-        patient_model = apps.get_model('core', 'Patient')
-        emergency_contact_model = apps.get_model('core', 'EmergencyContact')
-        
+        patient_model = apps.get_model("core", "Patient")
+        emergency_contact_model = apps.get_model("core", "EmergencyContact")
+
         assert patient_model == Patient
         assert emergency_contact_model == EmergencyContact
 
@@ -321,14 +322,12 @@ class TestMigrationIntegration:
             username="integrity_test",
             first_name="Data",
             last_name="Integrity",
-            password="pass"
+            password="pass",
         )
         profile = UserProfile.objects.create(
-            user=user,
-            role="patient",
-            phone="555-0000"
+            user=user, role="patient", phone="555-0000"
         )
-        
+
         patient = Patient.objects.create(
             user_profile=profile,
             date_of_birth=date(1985, 12, 25),
@@ -337,41 +336,41 @@ class TestMigrationIntegration:
             city="Integrity City",
             state="FL",
             postal_code="33101",
-            phone_primary="555-1111"
+            phone_primary="555-1111",
         )
-        
+
         # Add multiple emergency contacts
         contact1 = EmergencyContact.objects.create(
             patient=patient,
             name="Primary Contact",
             relationship="spouse",
             phone_primary="555-2222",
-            is_primary_contact=True
+            is_primary_contact=True,
         )
-        
+
         contact2 = EmergencyContact.objects.create(
             patient=patient,
             name="Secondary Contact",
             relationship="parent",
-            phone_primary="555-3333"
+            phone_primary="555-3333",
         )
-        
+
         # Verify all relationships and constraints work
         assert patient.user_profile == profile
         assert patient.emergency_contacts.count() == 2
         assert patient.get_primary_emergency_contact() == contact1
         assert contact1.is_primary_contact is True
         assert contact2.is_primary_contact is False
-        
+
         # Test constraint enforcement
         contact3 = EmergencyContact.objects.create(
             patient=patient,
             name="New Primary",
             relationship="friend",
             phone_primary="555-4444",
-            is_primary_contact=True
+            is_primary_contact=True,
         )
-        
+
         # Previous primary should be updated
         contact1.refresh_from_db()
         assert contact1.is_primary_contact is False

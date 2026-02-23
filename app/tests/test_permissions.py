@@ -287,3 +287,54 @@ class TestAdminPermissions:
         assert profile_admin.has_add_permission(request) is True
         assert profile_admin.has_change_permission(request) is True
         assert profile_admin.has_delete_permission(request) is True
+
+    def test_patient_access_mixin_permission_bypass(self, patient_user):
+        """Test that PatientAccessMixin bypasses Django permissions for role-based users."""
+
+        class TestPatientAccessAdmin(PatientAccessMixin):
+            pass
+
+        admin_instance = TestPatientAccessAdmin()
+        request = self.factory.get("/")
+        request.user = patient_user
+
+        # Patient should have view and change permissions without explicit Django perms
+        assert admin_instance.has_view_permission(request) is True
+        assert admin_instance.has_change_permission(request) is True
+        assert admin_instance.has_add_permission(request) is True
+
+    def test_patient_access_mixin_delete_restriction(self, patient_user):
+        """Test that patients cannot delete their own records."""
+        from core.models import Patient
+
+        # Create patient record
+        patient_user.profile.ensure_patient_record()
+        patient_record = Patient.objects.get(user_profile=patient_user.profile)
+
+        class TestPatientAccessAdmin(PatientAccessMixin):
+            pass
+
+        admin_instance = TestPatientAccessAdmin()
+        request = self.factory.get("/")
+        request.user = patient_user
+
+        # Patient should NOT have delete permission for their own record
+        assert admin_instance.has_delete_permission(request, patient_record) is False
+
+    def test_role_based_mixin_fallback_to_django_permissions(self):
+        """Test that users without profiles fall back to Django permissions."""
+        user_without_profile = User.objects.create_user(
+            username="no_profile_user", password="testpass123"
+        )
+
+        class TestPatientAccessAdmin(PatientAccessMixin):
+            pass
+
+        admin_instance = TestPatientAccessAdmin()
+        request = self.factory.get("/")
+        request.user = user_without_profile
+
+        # User without profile should fall back to Django permissions (False)
+        assert admin_instance.has_view_permission(request) is False
+        assert admin_instance.has_change_permission(request) is False
+        assert admin_instance.has_add_permission(request) is False
