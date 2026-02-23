@@ -198,13 +198,38 @@ class MedicalStaffMixin(RoleBasedAdminMixin):
 
 
 class DoctorOnlyMixin(RoleBasedAdminMixin):
-    """Mixin for doctor-only operations."""
+    """Mixin for doctor-only operations with patient assignment filtering."""
+
+    def filter_queryset_by_role(self, request, queryset, role):
+        if role == "doctor":
+            # Filter to only show records related to patients assigned to this doctor
+            model = queryset.model
+            if hasattr(model, "assigned_doctor"):
+                # Direct patient assignment
+                return queryset.filter(assigned_doctor=request.user.profile)
+            elif hasattr(model, "patient__assigned_doctor"):
+                # Related through patient (e.g., EmergencyContact)
+                return queryset.filter(patient__assigned_doctor=request.user.profile)
+            elif hasattr(model, "user_profile") and model.__name__ == "Patient":
+                # Patient model filtering
+                return queryset.filter(assigned_doctor=request.user.profile)
+        return queryset
 
     def check_role_permission(self, request, obj, action):
         if not super().check_role_permission(request, obj, action):
             return False
 
         user_role = request.user.profile.role
+        if user_role == "doctor":
+            # Doctors can only access their assigned patients
+            if obj:
+                if hasattr(obj, "assigned_doctor"):
+                    return obj.assigned_doctor == request.user.profile
+                elif hasattr(obj, "patient") and hasattr(
+                    obj.patient, "assigned_doctor"
+                ):
+                    return obj.patient.assigned_doctor == request.user.profile
+            return True  # Allow for add operations
         return user_role in ["doctor", "admin"]
 
 

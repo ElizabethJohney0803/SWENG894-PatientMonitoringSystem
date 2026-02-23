@@ -10,6 +10,24 @@ from .models import UserProfile, Patient, EmergencyContact
 from .mixins import PatientAccessMixin, AdminOnlyMixin
 
 
+class PatientAdminForm(forms.ModelForm):
+    """Custom form for Patient admin with proper assigned_doctor handling."""
+
+    class Meta:
+        model = Patient
+        fields = "__all__"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Limit assigned_doctor choices to only doctors
+        if "assigned_doctor" in self.fields:
+            self.fields["assigned_doctor"].queryset = UserProfile.objects.filter(
+                role="doctor"
+            )
+            self.fields["assigned_doctor"].required = False
+
+
 class CustomUserCreationForm(UserCreationForm):
     """Enhanced user creation form with role assignment."""
 
@@ -525,9 +543,11 @@ class EmergencyContactInline(admin.StackedInline):
 class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
     """Admin interface for patient records with role-based access."""
 
+    form = PatientAdminForm
     list_display = [
         "medical_id",
         "get_patient_name",
+        "get_assigned_doctor",
         "age",
         "gender",
         "phone_primary",
@@ -535,12 +555,21 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
         "state",
         "created_at",
     ]
-    list_filter = ["gender", "blood_type", "state", "created_at", "updated_at"]
+    list_filter = [
+        "gender",
+        "blood_type",
+        "state",
+        "assigned_doctor",
+        "created_at",
+        "updated_at",
+    ]
     search_fields = [
         "medical_id",
         "user_profile__user__first_name",
         "user_profile__user__last_name",
         "user_profile__user__username",
+        "assigned_doctor__user__first_name",
+        "assigned_doctor__user__last_name",
         "phone_primary",
         "city",
         "insurance_number",
@@ -553,6 +582,13 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
             {
                 "fields": ("user_profile", "medical_id"),
                 "description": "Your unique patient identification information",
+            },
+        ),
+        (
+            "Care Assignment",
+            {
+                "fields": ("assigned_doctor",),
+                "description": "Doctor assigned to this patient (admin-only)",
             },
         ),
         (
@@ -598,6 +634,18 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
     get_patient_name.short_description = "Patient Name"
     get_patient_name.admin_order_field = "user_profile__user__last_name"
 
+    def get_assigned_doctor(self, obj):
+        """Display assigned doctor's name."""
+        if obj.assigned_doctor:
+            return (
+                obj.assigned_doctor.user.get_full_name()
+                or obj.assigned_doctor.user.username
+            )
+        return "Unassigned"
+
+    get_assigned_doctor.short_description = "Assigned Doctor"
+    get_assigned_doctor.admin_order_field = "assigned_doctor__user__last_name"
+
     def age(self, obj):
         """Display patient's age."""
         return obj.age
@@ -627,8 +675,11 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
             request.user.profile.ensure_patient_record()
             # Patients can only see their own record
             return qs.filter(user_profile=request.user.profile)
-        elif user_role in ["doctor", "nurse", "pharmacy"]:
-            # Medical staff can see all patients
+        elif user_role == "doctor":
+            # Doctors can only see patients assigned to them
+            return qs.filter(assigned_doctor=request.user.profile)
+        elif user_role in ["nurse", "pharmacy"]:
+            # Nurses and pharmacy staff can see all patients
             return qs
         else:
             # Other roles see nothing
@@ -638,14 +689,29 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
         """Set readonly fields based on user role."""
         readonly_fields = list(self.readonly_fields)
 
-        if hasattr(request.user, "profile") and request.user.profile.role == "patient":
+        user_role = (
+            getattr(request.user.profile, "role", None)
+            if hasattr(request.user, "profile")
+            else None
+        )
+
+        if user_role == "patient":
             # Patients can only edit limited fields
             if obj and obj.user_profile != request.user.profile:
                 # Patient trying to edit another patient's record - make all readonly
                 return [field.name for field in self.model._meta.fields]
             else:
-                # Patient editing their own record - some fields editable
-                readonly_fields.extend(["user_profile", "date_of_birth", "gender"])
+                # Patient editing their own record - some fields editable, assigned_doctor always readonly
+                readonly_fields.extend(
+                    ["user_profile", "date_of_birth", "gender", "assigned_doctor"]
+                )
+        elif user_role == "doctor":
+            # Doctors can edit patient info but cannot change assignment
+            readonly_fields.append("assigned_doctor")
+        elif user_role in ["nurse", "pharmacy"]:
+            # Nurses and pharmacy staff cannot change assignments
+            readonly_fields.append("assigned_doctor")
+        # Admin and superuser can edit assigned_doctor field
 
         return readonly_fields
 

@@ -128,6 +128,11 @@ class UserProfile(models.Model):
         return self.role == "admin"
 
     @property
+    def can_assign_patients(self):
+        """Check if user can assign patients to doctors."""
+        return self.role == "admin"
+
+    @property
     def is_complete(self):
         """Check if profile is complete."""
         required_fields = ["role"]
@@ -186,6 +191,18 @@ class UserProfile(models.Model):
                     # Silent fail - Patient record creation is not critical for UserProfile creation
                     pass
 
+    def get_assigned_patients(self):
+        """Get all patients assigned to this doctor."""
+        if self.role == "doctor":
+            return self.assigned_patients.all()
+        return None
+
+    def get_assigned_patients_count(self):
+        """Get count of patients assigned to this doctor."""
+        if self.role == "doctor":
+            return self.assigned_patients.count()
+        return 0
+
 
 class Patient(models.Model):
     """
@@ -214,6 +231,17 @@ class Patient(models.Model):
     # Link to UserProfile
     user_profile = models.OneToOneField(
         UserProfile, on_delete=models.CASCADE, related_name="patient_record"
+    )
+
+    # Doctor assignment (admin-only)
+    assigned_doctor = models.ForeignKey(
+        UserProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        limit_choices_to={"role": "doctor"},
+        related_name="assigned_patients",
+        help_text="Doctor assigned to this patient (admin-only assignment)",
     )
 
     # Medical identification
@@ -307,6 +335,10 @@ class Patient(models.Model):
             raise ValidationError(
                 "Patient records can only be linked to UserProfiles with role='patient'"
             )
+
+        # Validate assigned doctor
+        if self.assigned_doctor and self.assigned_doctor.role != "doctor":
+            raise ValidationError("Assigned doctor must have role='doctor'")
 
         # Validate date of birth
         self.clean_date_of_birth()
