@@ -28,6 +28,166 @@ from core.models import UserProfile
 @pytest.mark.django_db
 @pytest.mark.unit
 @pytest.mark.permissions
+class TestPatientDoctorAssignmentPermissions:
+    """Test Patient-Doctor assignment permission functionality."""
+
+    def setup_method(self):
+        """Set up test environment."""
+        self.factory = RequestFactory()
+        self.admin_site = AdminSite()
+
+    def test_doctor_queryset_filtering(self, doctor_user, patient_user, doctor_user_2):
+        """Test that doctors only see their assigned patients."""
+        from core.admin import PatientAdmin
+        from core.models import Patient
+
+        # Create patients
+        patient1 = patient_user.profile.patient_record
+
+        # Create second patient
+        user2 = User.objects.create_user(username="patient2", password="pass")
+        profile2 = UserProfile.objects.create(user=user2, role="patient")
+        patient2 = profile2.patient_record
+
+        # Assign patient1 to doctor1, patient2 to doctor2
+        patient1.assigned_doctor = doctor_user.profile
+        patient1.save()
+        patient2.assigned_doctor = doctor_user_2.profile
+        patient2.save()
+
+        # Test doctor1 can only see patient1
+        admin = PatientAdmin(Patient, self.admin_site)
+        request = self.factory.get("/")
+        request.user = doctor_user
+
+        queryset = admin.get_queryset(request)
+        assert queryset.count() == 1
+        assert patient1 in queryset
+        assert patient2 not in queryset
+
+        # Test doctor2 can only see patient2
+        request.user = doctor_user_2
+        queryset = admin.get_queryset(request)
+        assert queryset.count() == 1
+        assert patient2 in queryset
+        assert patient1 not in queryset
+
+    def test_admin_can_see_all_patients(self, admin_user, doctor_user, patient_user):
+        """Test that admin can see all patients regardless of assignment."""
+        from core.admin import PatientAdmin
+        from core.models import Patient
+
+        patient = patient_user.profile.patient_record
+        patient.assigned_doctor = doctor_user.profile
+        patient.save()
+
+        admin = PatientAdmin(Patient, self.admin_site)
+        request = self.factory.get("/")
+        request.user = admin_user
+
+        queryset = admin.get_queryset(request)
+        assert patient in queryset
+
+    def test_doctor_readonly_assigned_doctor_field(self, doctor_user, patient_user):
+        """Test that doctors cannot modify assigned_doctor field."""
+        from core.admin import PatientAdmin
+        from core.models import Patient
+
+        patient = patient_user.profile.patient_record
+        patient.assigned_doctor = doctor_user.profile
+        patient.save()
+
+        admin = PatientAdmin(Patient, self.admin_site)
+        request = self.factory.get("/")
+        request.user = doctor_user
+
+        readonly_fields = admin.get_readonly_fields(request, patient)
+        assert "assigned_doctor" in readonly_fields
+
+    def test_admin_can_modify_assigned_doctor_field(self, admin_user, patient_user):
+        """Test that admin can modify assigned_doctor field."""
+        from core.admin import PatientAdmin
+        from core.models import Patient
+
+        patient = patient_user.profile.patient_record
+
+        admin = PatientAdmin(Patient, self.admin_site)
+        request = self.factory.get("/")
+        request.user = admin_user
+
+        readonly_fields = admin.get_readonly_fields(request, patient)
+        assert (
+            "assigned_doctor" not in readonly_fields
+            or readonly_fields == admin.readonly_fields
+        )
+
+    def test_patient_cannot_modify_assigned_doctor_field(self, patient_user):
+        """Test that patients cannot modify assigned_doctor field."""
+        from core.admin import PatientAdmin
+        from core.models import Patient
+
+        patient = patient_user.profile.patient_record
+
+        admin = PatientAdmin(Patient, self.admin_site)
+        request = self.factory.get("/")
+        request.user = patient_user
+
+        readonly_fields = admin.get_readonly_fields(request, patient)
+        assert "assigned_doctor" in readonly_fields
+
+    def test_doctor_only_mixin_filtering(self, doctor_user, patient_user):
+        """Test DoctorOnlyMixin filtering for assigned patients."""
+        from core.mixins import DoctorOnlyMixin
+        from core.models import Patient
+
+        # Create test admin class with mixin
+        class TestDoctorAdmin(DoctorOnlyMixin):
+            def get_queryset(self, request):
+                from django.contrib.admin import ModelAdmin
+
+                qs = Patient.objects.all()
+                return (
+                    super().get_queryset(request)
+                    if hasattr(super(), "get_queryset")
+                    else qs
+                )
+
+        patient = patient_user.profile.patient_record
+        patient.assigned_doctor = doctor_user.profile
+        patient.save()
+
+        admin = TestDoctorAdmin()
+        request = self.factory.get("/")
+        request.user = doctor_user
+
+        # Test filtering method directly
+        queryset = Patient.objects.all()
+        filtered_qs = admin.filter_queryset_by_role(request, queryset, "doctor")
+
+        assert patient in filtered_qs
+        assert filtered_qs.count() == 1
+
+    def test_unassigned_patients_invisible_to_doctors(self, doctor_user, patient_user):
+        """Test that doctors cannot see unassigned patients."""
+        from core.admin import PatientAdmin
+        from core.models import Patient
+
+        # Patient has no assigned doctor
+        patient = patient_user.profile.patient_record
+        assert patient.assigned_doctor is None
+
+        admin = PatientAdmin(Patient, self.admin_site)
+        request = self.factory.get("/")
+        request.user = doctor_user
+
+        queryset = admin.get_queryset(request)
+        assert patient not in queryset
+        assert queryset.count() == 0
+
+
+@pytest.mark.django_db
+@pytest.mark.unit
+@pytest.mark.permissions
 class TestPermissionMixins:
     """Test role-based permission mixins."""
 

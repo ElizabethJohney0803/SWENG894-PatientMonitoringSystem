@@ -21,6 +21,151 @@ from core.models import UserProfile, Patient, EmergencyContact
 @pytest.mark.django_db
 @pytest.mark.unit
 @pytest.mark.models
+class TestPatientDoctorAssignment:
+    """Test Patient-Doctor assignment functionality."""
+
+    def test_patient_assigned_doctor_field_exists(self, patient_user, doctor_user):
+        """Test that Patient model has assigned_doctor field."""
+        patient = patient_user.profile.patient_record
+
+        # Test field exists and is initially None
+        assert hasattr(patient, "assigned_doctor")
+        assert patient.assigned_doctor is None
+
+        # Test assignment
+        patient.assigned_doctor = doctor_user.profile
+        patient.save()
+
+        # Verify assignment
+        patient.refresh_from_db()
+        assert patient.assigned_doctor == doctor_user.profile
+
+    def test_patient_assigned_doctor_reverse_relationship(
+        self, patient_user, doctor_user
+    ):
+        """Test reverse relationship from doctor to assigned patients."""
+        patient = patient_user.profile.patient_record
+        doctor_profile = doctor_user.profile
+
+        # Initially no assigned patients
+        assert doctor_profile.assigned_patients.count() == 0
+
+        # Assign patient to doctor
+        patient.assigned_doctor = doctor_profile
+        patient.save()
+
+        # Test reverse relationship
+        assert doctor_profile.assigned_patients.count() == 1
+        assert patient in doctor_profile.assigned_patients.all()
+
+    def test_patient_assigned_doctor_set_null_on_delete(
+        self, patient_user, doctor_user
+    ):
+        """Test that deleting doctor sets assigned_doctor to NULL."""
+        patient = patient_user.profile.patient_record
+        doctor_profile = doctor_user.profile
+
+        # Assign patient to doctor
+        patient.assigned_doctor = doctor_profile
+        patient.save()
+
+        # Delete doctor profile
+        doctor_profile.delete()
+
+        # Patient should still exist with assigned_doctor as None
+        patient.refresh_from_db()
+        assert patient.assigned_doctor is None
+
+    def test_patient_assigned_doctor_validation(self, patient_user, admin_user):
+        """Test validation that assigned_doctor must be a doctor."""
+        patient = patient_user.profile.patient_record
+        admin_profile = admin_user.profile
+
+        # Try to assign non-doctor to patient
+        patient.assigned_doctor = admin_profile
+
+        # Should raise ValidationError on save
+        with pytest.raises(
+            ValidationError, match="Assigned doctor must have role='doctor'"
+        ):
+            patient.save()
+
+    def test_doctor_utility_methods(self, doctor_user):
+        """Test doctor utility methods for patient assignment."""
+        doctor_profile = doctor_user.profile
+
+        # Test get_assigned_patients for doctor
+        assigned_patients = doctor_profile.get_assigned_patients()
+        assert assigned_patients is not None
+        assert assigned_patients.count() == 0
+
+        # Test get_assigned_patients_count
+        assert doctor_profile.get_assigned_patients_count() == 0
+
+    def test_non_doctor_utility_methods(self, patient_user):
+        """Test utility methods for non-doctor profiles."""
+        patient_profile = patient_user.profile
+
+        # Non-doctor should return None for get_assigned_patients
+        assert patient_profile.get_assigned_patients() is None
+        assert patient_profile.get_assigned_patients_count() == 0
+
+    def test_can_assign_patients_property(self, admin_user, doctor_user, patient_user):
+        """Test can_assign_patients property."""
+        # Only admin can assign patients
+        assert admin_user.profile.can_assign_patients is True
+        assert doctor_user.profile.can_assign_patients is False
+        assert patient_user.profile.can_assign_patients is False
+
+    def test_multiple_patients_to_one_doctor(self, doctor_user):
+        """Test that one doctor can have multiple assigned patients."""
+        doctor_profile = doctor_user.profile
+
+        # Create multiple patients
+        patients = []
+        for i in range(3):
+            user = User.objects.create_user(
+                username=f"patient_multi_{i}",
+                first_name=f"Patient{i}",
+                last_name="Multi",
+            )
+            profile = UserProfile.objects.create(user=user, role="patient")
+            patients.append(profile.patient_record)
+
+        # Assign all patients to same doctor
+        for patient in patients:
+            patient.assigned_doctor = doctor_profile
+            patient.save()
+
+        # Verify all assignments
+        assert doctor_profile.get_assigned_patients_count() == 3
+        assigned = doctor_profile.get_assigned_patients()
+        for patient in patients:
+            assert patient in assigned
+
+    def test_patient_can_be_unassigned(self, patient_user, doctor_user):
+        """Test that patient assignment can be removed."""
+        patient = patient_user.profile.patient_record
+        doctor_profile = doctor_user.profile
+
+        # Assign patient
+        patient.assigned_doctor = doctor_profile
+        patient.save()
+        assert patient.assigned_doctor == doctor_profile
+
+        # Unassign patient
+        patient.assigned_doctor = None
+        patient.save()
+
+        # Verify unassignment
+        patient.refresh_from_db()
+        assert patient.assigned_doctor is None
+        assert doctor_profile.get_assigned_patients_count() == 0
+
+
+@pytest.mark.django_db
+@pytest.mark.unit
+@pytest.mark.models
 class TestUserProfileModel:
     """Test UserProfile model functionality."""
 

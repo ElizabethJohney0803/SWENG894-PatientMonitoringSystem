@@ -127,3 +127,24 @@ def sample_users(admin_user, doctor_user, nurse_user, patient_user, pharmacy_use
         "patient": patient_user,
         "pharmacy": pharmacy_user,
     }
+
+
+@pytest.fixture
+def doctor_user_2(create_groups):
+    """Create a second doctor user for multi-doctor tests."""
+    user = User.objects.create_user(
+        username="doctor2_test",
+        first_name="Sarah",
+        last_name="Johnson",
+        email="doctor2@hospital.com",
+        password="testpass123",
+        is_staff=True,
+    )
+    profile = UserProfile.objects.create(
+        user=user,
+        role="doctor",
+        department="Neurology",
+        license_number="MD789012",
+        phone="555-0006",
+    )
+    return user

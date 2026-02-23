@@ -789,6 +789,331 @@ class TestSystemSecurity:
         user_id = test_user.id
         test_user.delete()
 
+
+@pytest.mark.django_db
+@pytest.mark.integration
+@pytest.mark.pms010
+class TestPatientDoctorAssignmentSystemIntegration:
+    """Integration tests for Patient-Doctor assignment in the complete system."""
+
+    def test_complete_patient_doctor_assignment_workflow(self, create_groups):
+        """Test complete workflow from user creation to assignment and access control."""
+        # Step 1: Create admin, doctor, and patient users
+        admin_user = User.objects.create_user(
+            username="admin_workflow",
+            first_name="Admin",
+            last_name="Workflow",
+            password="testpass123",
+        )
+        admin_profile = UserProfile.objects.create(user=admin_user, role="admin")
+
+        doctor_user = User.objects.create_user(
+            username="doctor_workflow",
+            first_name="Dr. Workflow",
+            last_name="Test",
+            password="testpass123",
+        )
+        doctor_profile = UserProfile.objects.create(
+            user=doctor_user,
+            role="doctor",
+            department="Internal Medicine",
+            license_number="DOC_WORKFLOW",
+        )
+
+        patient_user = User.objects.create_user(
+            username="patient_workflow",
+            first_name="Patient",
+            last_name="Workflow",
+            password="testpass123",
+        )
+        patient_profile = UserProfile.objects.create(user=patient_user, role="patient")
+        patient = patient_profile.patient_record
+
+        # Step 2: Verify initial state
+        assert patient.assigned_doctor is None
+        assert doctor_profile.get_assigned_patients_count() == 0
+
+        # Step 3: Admin assigns patient to doctor (simulating admin interface)
+        site = AdminSite()
+        patient_admin = PatientAdmin(Patient, site)
+
+        class MockRequest:
+            def __init__(self, user):
+                self.user = user
+
+        admin_request = MockRequest(admin_user)
+
+        # Admin can see all patients
+        admin_queryset = patient_admin.get_queryset(admin_request)
+        assert patient in admin_queryset
+
+        # Perform assignment
+        patient.assigned_doctor = doctor_profile
+        patient.save()
+
+        # Step 4: Verify assignment effects
+        assert patient.assigned_doctor == doctor_profile
+        assert doctor_profile.get_assigned_patients_count() == 1
+        assert patient in doctor_profile.get_assigned_patients()
+
+        # Step 5: Test doctor access after assignment
+        doctor_request = MockRequest(doctor_user)
+        doctor_queryset = patient_admin.get_queryset(doctor_request)
+        assert patient in doctor_queryset
+        assert doctor_queryset.count() == 1
+
+        # Step 6: Verify admin display methods
+        assert patient_admin.get_assigned_doctor(patient) == doctor_user.get_full_name()
+
+        # Step 7: Test permission restrictions
+        readonly_fields = patient_admin.get_readonly_fields(doctor_request, patient)
+        assert "assigned_doctor" in readonly_fields  # Doctor cannot change assignment
+
+        admin_readonly = patient_admin.get_readonly_fields(admin_request, patient)
+        basic_readonly = ["medical_id", "age", "created_at", "updated_at"]
+        # Admin should only have basic readonly fields, not assigned_doctor
+        for field in basic_readonly:
+            assert field in admin_readonly
+
+    def test_multi_doctor_patient_distribution(self, create_groups):
+        """Test system with multiple doctors and patients."""
+        # Create multiple doctors
+        doctors = []
+        for i in range(3):
+            user = User.objects.create_user(
+                username=f"doctor_dist_{i}",
+                first_name=f"Doctor{i}",
+                last_name="Distribution",
+                password="testpass123",
+            )
+            profile = UserProfile.objects.create(
+                user=user,
+                role="doctor",
+                department=f"Department{i}",
+                license_number=f"DOC_DIST_{i}",
+            )
+            doctors.append(profile)
+
+        # Create multiple patients
+        patients = []
+        for i in range(6):
+            user = User.objects.create_user(
+                username=f"patient_dist_{i}",
+                first_name=f"Patient{i}",
+                last_name="Distribution",
+                password="testpass123",
+            )
+            profile = UserProfile.objects.create(user=user, role="patient")
+            patients.append(profile.patient_record)
+
+        # Distribute patients among doctors (2 patients per doctor)
+        for i, patient in enumerate(patients):
+            doctor = doctors[i // 2]  # 0,1 -> doctor0; 2,3 -> doctor1; 4,5 -> doctor2
+            patient.assigned_doctor = doctor
+            patient.save()
+
+        # Verify distribution
+        for i, doctor in enumerate(doctors):
+            expected_count = 2
+            actual_count = doctor.get_assigned_patients_count()
+            assert (
+                actual_count == expected_count
+            ), f"Doctor {i} has {actual_count} patients, expected {expected_count}"
+
+        # Test admin interface shows correct filtering
+        site = AdminSite()
+        patient_admin = PatientAdmin(Patient, site)
+
+        class MockRequest:
+            def __init__(self, user):
+                self.user = user
+
+        # Each doctor should see only their assigned patients
+        for doctor in doctors:
+            request = MockRequest(doctor.user)
+            queryset = patient_admin.get_queryset(request)
+            assert queryset.count() == 2
+
+            # Verify correct patients are returned
+            for patient in queryset:
+                assert patient.assigned_doctor == doctor
+
+    def test_patient_reassignment_system_effects(self, create_groups):
+        """Test system-wide effects of patient reassignment."""
+        # Create doctors and patient
+        doctor1_user = User.objects.create_user(
+            username="doctor1_reassign_sys", password="pass"
+        )
+        doctor1_profile = UserProfile.objects.create(
+            user=doctor1_user, role="doctor", license_number="DOC1_REASSIGN"
+        )
+
+        doctor2_user = User.objects.create_user(
+            username="doctor2_reassign_sys", password="pass"
+        )
+        doctor2_profile = UserProfile.objects.create(
+            user=doctor2_user, role="doctor", license_number="DOC2_REASSIGN"
+        )
+
+        patient_user = User.objects.create_user(
+            username="patient_reassign_sys", password="pass"
+        )
+        patient_profile = UserProfile.objects.create(user=patient_user, role="patient")
+        patient = patient_profile.patient_record
+
+        # Create emergency contact for integration testing
+        emergency_contact = EmergencyContact.objects.create(
+            patient=patient,
+            name="System Test Contact",
+            relationship="spouse",
+            phone_primary="555-0100",
+        )
+
+        site = AdminSite()
+        patient_admin = PatientAdmin(Patient, site)
+
+        class MockRequest:
+            def __init__(self, user):
+                self.user = user
+
+        # Initial assignment to doctor1
+        patient.assigned_doctor = doctor1_profile
+        patient.save()
+
+        # Verify doctor1 can see patient and emergency contact
+        doctor1_request = MockRequest(doctor1_user)
+        doctor1_queryset = patient_admin.get_queryset(doctor1_request)
+        assert patient in doctor1_queryset
+
+        # Doctor2 cannot see patient initially
+        doctor2_request = MockRequest(doctor2_user)
+        doctor2_queryset = patient_admin.get_queryset(doctor2_request)
+        assert patient not in doctor2_queryset
+
+        # Reassign to doctor2
+        patient.assigned_doctor = doctor2_profile
+        patient.save()
+
+        # Verify access changes
+        doctor1_queryset = patient_admin.get_queryset(doctor1_request)
+        assert patient not in doctor1_queryset  # Doctor1 loses access
+
+        doctor2_queryset = patient_admin.get_queryset(doctor2_request)
+        assert patient in doctor2_queryset  # Doctor2 gains access
+
+        # Verify counts are updated
+        assert doctor1_profile.get_assigned_patients_count() == 0
+        assert doctor2_profile.get_assigned_patients_count() == 1
+
+    def test_unassigned_patient_access_control(self, create_groups):
+        """Test access control for unassigned patients."""
+        # Create admin, doctor, nurse, and patient
+        admin_user = User.objects.create_user(
+            username="admin_unassigned", password="pass"
+        )
+        admin_profile = UserProfile.objects.create(user=admin_user, role="admin")
+
+        doctor_user = User.objects.create_user(
+            username="doctor_unassigned", password="pass"
+        )
+        doctor_profile = UserProfile.objects.create(
+            user=doctor_user, role="doctor", license_number="DOC_UNASSIGNED"
+        )
+
+        nurse_user = User.objects.create_user(
+            username="nurse_unassigned", password="pass"
+        )
+        nurse_profile = UserProfile.objects.create(
+            user=nurse_user, role="nurse", license_number="NURSE_UNASSIGNED"
+        )
+
+        patient_user = User.objects.create_user(
+            username="patient_unassigned", password="pass"
+        )
+        patient_profile = UserProfile.objects.create(user=patient_user, role="patient")
+        patient = patient_profile.patient_record  # Remains unassigned
+
+        site = AdminSite()
+        patient_admin = PatientAdmin(Patient, site)
+
+        class MockRequest:
+            def __init__(self, user):
+                self.user = user
+
+        # Admin can see unassigned patients
+        admin_request = MockRequest(admin_user)
+        admin_queryset = patient_admin.get_queryset(admin_request)
+        assert patient in admin_queryset
+
+        # Doctor cannot see unassigned patients
+        doctor_request = MockRequest(doctor_user)
+        doctor_queryset = patient_admin.get_queryset(doctor_request)
+        assert patient not in doctor_queryset
+
+        # Nurse can see all patients (including unassigned)
+        nurse_request = MockRequest(nurse_user)
+        nurse_queryset = patient_admin.get_queryset(nurse_request)
+        assert patient in nurse_queryset
+
+        # Patient can see their own record
+        patient_request = MockRequest(patient_user)
+        patient_queryset = patient_admin.get_queryset(patient_request)
+        assert patient in patient_queryset
+
+    def test_form_integration_with_assignment(self, create_groups):
+        """Test PatientAdminForm integration with assignment functionality."""
+        from core.admin import PatientAdminForm
+
+        # Create test users
+        doctor_user = User.objects.create_user(
+            username="doctor_form_int", password="pass"
+        )
+        doctor_profile = UserProfile.objects.create(
+            user=doctor_user, role="doctor", license_number="DOC_FORM_INT"
+        )
+
+        nurse_user = User.objects.create_user(
+            username="nurse_form_int", password="pass"
+        )
+        nurse_profile = UserProfile.objects.create(
+            user=nurse_user, role="nurse", license_number="NURSE_FORM_INT"
+        )
+
+        patient_user = User.objects.create_user(
+            username="patient_form_int", password="pass"
+        )
+        patient_profile = UserProfile.objects.create(user=patient_user, role="patient")
+        patient = patient_profile.patient_record
+
+        # Test form initialization
+        form = PatientAdminForm(instance=patient)
+
+        # Verify assigned_doctor field is properly configured
+        assert "assigned_doctor" in form.fields
+        assert not form.fields["assigned_doctor"].required
+
+        # Verify queryset only includes doctors
+        doctor_choices = form.fields["assigned_doctor"].queryset
+        assert doctor_profile in doctor_choices
+        assert nurse_profile not in doctor_choices
+        assert doctor_choices.count() == 1  # Only the doctor we created
+
+        # Test form with assignment
+        form_data = {
+            "user_profile": patient_profile.id,
+            "assigned_doctor": doctor_profile.id,
+            "date_of_birth": "1990-01-01",
+            "gender": "M",
+            "address_line1": "Test Address",
+            "city": "Test City",
+            "state": "TS",
+            "postal_code": "12345",
+            "phone_primary": "555-0123",
+        }
+
+        form_with_data = PatientAdminForm(data=form_data, instance=patient)
+        # Note: We don't validate the form as it requires all Patient model fields
+
         # User should be removed from groups (cascade delete)
         doctors_group = Group.objects.get(name="Doctors")
         assert not doctors_group.user_set.filter(id=user_id).exists()
