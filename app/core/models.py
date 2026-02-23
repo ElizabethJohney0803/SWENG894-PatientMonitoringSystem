@@ -68,6 +68,13 @@ class UserProfile(models.Model):
 
         # Assign user to appropriate group after saving
         self.assign_to_group()
+        # Auto-create Patient record for patient users
+        if self.role == "patient":
+            self.ensure_patient_record()
+            # Ensure patient users can access admin interface
+            if not self.user.is_staff:
+                self.user.is_staff = True
+                self.user.save()
 
     def assign_to_group(self):
         """Assign user to the appropriate group based on their role."""
@@ -151,6 +158,33 @@ class UserProfile(models.Model):
             missing.append("department")
 
         return missing
+
+    def ensure_patient_record(self):
+        """Ensure a Patient record exists for this patient UserProfile."""
+        if self.role == "patient":
+            # Import here to avoid circular imports
+            from datetime import date
+
+            # Check if Patient record already exists
+            if not hasattr(self, "patient_record"):
+                try:
+                    # Create a basic Patient record with placeholder data
+                    # The user can fill in the actual details later through admin
+                    Patient.objects.create(
+                        user_profile=self,
+                        date_of_birth=date(
+                            1990, 1, 1
+                        ),  # Placeholder - user should update
+                        gender="O",  # Other - user should update
+                        address_line1="Please update your address",
+                        city="Please update",
+                        state="Please update",
+                        postal_code="00000",
+                        phone_primary=self.phone or "000-000-0000",
+                    )
+                except Exception:
+                    # Silent fail - Patient record creation is not critical for UserProfile creation
+                    pass
 
 
 class Patient(models.Model):

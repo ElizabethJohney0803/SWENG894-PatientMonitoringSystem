@@ -4,6 +4,8 @@ from django.contrib.auth.models import User
 from django.contrib.auth.forms import UserCreationForm
 from django import forms
 from django.db import models
+from django.http import HttpResponseRedirect
+from django.urls import reverse
 from .models import UserProfile, Patient, EmergencyContact
 from .mixins import PatientAccessMixin, AdminOnlyMixin
 
@@ -270,6 +272,26 @@ class UserAdmin(AdminOnlyMixin, BaseUserAdmin):
 class UserProfileAdmin(PatientAccessMixin, admin.ModelAdmin):
     """Admin interface for user profiles with role-based filtering."""
 
+    def has_module_permission(self, request):
+        """Hide UserProfile admin from patients - they should use Patient admin instead."""
+        # Always allow superusers
+        if request.user.is_superuser:
+            return True
+
+        # Check if user has a profile
+        if not hasattr(request.user, "profile"):
+            return False
+
+        user_role = request.user.profile.role
+
+        # Patients should not see UserProfile admin - redirect them to Patient admin
+        if user_role == "patient":
+            return False
+
+        # Allow admin and medical staff to access UserProfile admin
+        allowed_roles = ["admin", "doctor", "nurse", "pharmacy"]
+        return user_role in allowed_roles
+
     def get_queryset(self, request):
         """Filter profiles based on role permissions."""
         qs = super().get_queryset(request)
@@ -526,14 +548,26 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
     readonly_fields = ["medical_id", "age", "created_at", "updated_at"]
 
     fieldsets = (
-        ("Patient Identity", {"fields": ("user_profile", "medical_id")}),
+        (
+            "Patient Identity",
+            {
+                "fields": ("user_profile", "medical_id"),
+                "description": "Your unique patient identification information",
+            },
+        ),
         (
             "Personal Information",
-            {"fields": ("date_of_birth", "gender", "blood_type", "insurance_number")},
+            {
+                "fields": ("date_of_birth", "gender", "blood_type", "insurance_number"),
+                "description": "Please ensure your personal details are accurate",
+            },
         ),
         (
             "Contact Information",
-            {"fields": ("phone_primary", "phone_secondary", "email_personal")},
+            {
+                "fields": ("phone_primary", "phone_secondary", "email_personal"),
+                "description": "How we can reach you in case of emergencies or appointments",
+            },
         ),
         (
             "Address",
@@ -545,7 +579,8 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
                     "state",
                     "postal_code",
                     "country",
-                )
+                ),
+                "description": "Your current residential address",
             },
         ),
         (
@@ -588,6 +623,8 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
             # Admins can see all patients
             return qs
         elif user_role == "patient":
+            # Auto-create Patient record if it doesn't exist
+            request.user.profile.ensure_patient_record()
             # Patients can only see their own record
             return qs.filter(user_profile=request.user.profile)
         elif user_role in ["doctor", "nurse", "pharmacy"]:
@@ -619,20 +656,103 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
 
     def has_change_permission(self, request, obj=None):
         """Control who can change patient records."""
-        if not super().has_change_permission(request, obj):
+        # Always allow superusers
+        if request.user.is_superuser:
+            return True
+
+        # Check if user has a profile
+        if not hasattr(request.user, "profile"):
             return False
 
-        # Additional checks for patients
-        if hasattr(request.user, "profile") and request.user.profile.role == "patient":
-            if obj and obj.user_profile != request.user.profile:
-                return False  # Patients can't edit other patients' records
+        user_role = request.user.profile.role
 
-        return True
+        # Allow admin and medical staff full access
+        if user_role in ["admin", "doctor", "nurse", "pharmacy"]:
+            return True
+
+        # Allow patients to change their own records
+        if user_role == "patient":
+            if obj is None:  # For changelist view
+                return True
+            else:  # For specific object
+                return obj.user_profile == request.user.profile
+
+        return False
 
     def has_delete_permission(self, request, obj=None):
         """Control who can delete patient records."""
         # Use the permission from PatientAccessMixin
         return super().has_delete_permission(request, obj)
+
+    def has_view_permission(self, request, obj=None):
+        """Allow patients to view their own records."""
+        # Always allow superusers
+        if request.user.is_superuser:
+            return True
+
+        # Check if user has a profile
+        if not hasattr(request.user, "profile"):
+            return False
+
+        user_role = request.user.profile.role
+
+        # Allow admin and medical staff full access
+        if user_role in ["admin", "doctor", "nurse", "pharmacy"]:
+            return True
+
+        # Allow patients to view their own records
+        if user_role == "patient":
+            if obj is None:  # For changelist view
+                return True
+            else:  # For specific object
+                return obj.user_profile == request.user.profile
+
+        return False
+
+    def has_module_permission(self, request):
+        """Allow patients to access the Patient admin module."""
+        # Always allow superusers
+        if request.user.is_superuser:
+            return True
+
+        # Check if user has a profile
+        if not hasattr(request.user, "profile"):
+            return False
+
+        user_role = request.user.profile.role
+
+        # Allow admin, medical staff, and patients to access Patient admin
+        allowed_roles = ["admin", "doctor", "nurse", "pharmacy", "patient"]
+        return user_role in allowed_roles
+
+    def changelist_view(self, request, extra_context=None):
+        """Override changelist view to provide helpful context for patients."""
+        extra_context = extra_context or {}
+
+        # Add helpful message for patient users
+        if hasattr(request.user, "profile") and request.user.profile.role == "patient":
+            extra_context["patient_help_message"] = (
+                "Welcome! Below you can view and update your patient information. "
+                "Please make sure all your details are accurate and up-to-date."
+            )
+
+            # Auto-create Patient record if it doesn't exist
+            request.user.profile.ensure_patient_record()
+
+        return super().changelist_view(request, extra_context)
+
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        """Override change view to provide helpful context for patients."""
+        extra_context = extra_context or {}
+
+        # Add helpful message for patient users
+        if hasattr(request.user, "profile") and request.user.profile.role == "patient":
+            extra_context["patient_help_message"] = (
+                "Please update your information below. Fields marked with placeholder text "
+                "should be updated with your actual information."
+            )
+
+        return super().change_view(request, object_id, form_url, extra_context)
 
 
 @admin.register(EmergencyContact)

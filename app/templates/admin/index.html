@@ -1,0 +1,81 @@
+{% extends "admin/index.html" %}
+{% load i18n static %}
+
+{% block content %}
+    {% if user.profile.role == "patient" %}
+        <div class="patient-dashboard" style="background: #e3f2fd; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+            <h2 style="color: #1565c0; margin-top: 0;">
+                <span style="margin-right: 10px;">🏥</span>
+                Welcome, {{ user.get_full_name|default:user.username }}!
+            </h2>
+            <p style="font-size: 16px; color: #333; margin-bottom: 20px;">
+                Manage your patient information and emergency contacts below.
+            </p>
+            
+            <div style="background: white; padding: 15px; border-radius: 6px; border-left: 4px solid #4caf50;">
+                <h3 style="margin-top: 0; color: #2e7d32;">
+                    <span style="margin-right: 8px;">📋</span>
+                    Your Patient Information
+                </h3>
+                <p style="margin-bottom: 15px;">
+                    Click below to view and update your personal information, address, and emergency contacts.
+                </p>
+                <a href="{% url 'admin:core_patient_changelist' %}" 
+                   style="background: #4caf50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">
+                    <span style="margin-right: 8px;">✏️</span>
+                    View & Edit My Information
+                </a>
+            </div>
+            
+            <div style="background: #fff3cd; padding: 15px; border-radius: 6px; border-left: 4px solid #ffc107; margin-top: 15px;">
+                <h4 style="margin-top: 0; color: #856404;">
+                    <span style="margin-right: 8px;">💡</span>
+                    Quick Tips
+                </h4>
+                <ul style="color: #856404; margin-bottom: 0;">
+                    <li>Keep your contact information up to date</li>
+                    <li>Add emergency contacts for safety</li>
+                    <li>Review your personal details regularly</li>
+                    <li>Update address changes promptly</li>
+                </ul>
+            </div>
+        </div>
+    {% endif %}
+    
+    {{ block.super }}
+{% endblock %}
+
+{% block extrahead %}
+    {{ block.super }}
+    {% if user.profile.role == "patient" %}
+        <style>
+            /* Hide sections that patients don't need */
+            .module h2 a[href*="userprofile"] {
+                display: none;
+            }
+            
+            /* Highlight patient-relevant sections */
+            .module h2 a[href*="patient"] {
+                background: #e8f5e8 !important;
+                color: #2e7d32 !important;
+                padding: 5px 10px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+        </style>
+        
+        <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                // Automatically ensure patient record exists by making a request
+                fetch('{% url "admin:core_patient_changelist" %}', {
+                    method: 'GET',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                    }
+                }).catch(function(error) {
+                    console.log('Patient record check completed');
+                });
+            });
+        </script>
+    {% endif %}
+{% endblock %}
