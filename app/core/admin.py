@@ -652,6 +652,85 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
 
     age.short_description = "Age"
 
+    def get_list_display(self, request):
+        """Return role-specific list display columns."""
+        user_role = (
+            getattr(request.user.profile, "role", None)
+            if hasattr(request.user, "profile")
+            else None
+        )
+
+        if user_role == "patient":
+            # Patients see a simplified view of their own record
+            return ["medical_id", "get_patient_name", "age", "gender", "phone_primary"]
+
+        if user_role == "doctor":
+            # Doctors need clinical details about their assigned patients
+            return [
+                "medical_id",
+                "get_patient_name",
+                "age",
+                "gender",
+                "blood_type",
+                "phone_primary",
+                "city",
+            ]
+
+        if user_role in ["nurse", "pharmacy"]:
+            # Nurses/pharmacy focus on identification, assignment and contact
+            return [
+                "medical_id",
+                "get_patient_name",
+                "get_assigned_doctor",
+                "age",
+                "gender",
+                "phone_primary",
+                "city",
+            ]
+
+        # Admin and superuser — full list
+        return [
+            "medical_id",
+            "get_patient_name",
+            "get_assigned_doctor",
+            "age",
+            "gender",
+            "phone_primary",
+            "city",
+            "state",
+            "created_at",
+        ]
+
+    def get_list_filter(self, request):
+        """Return role-specific list filters."""
+        user_role = (
+            getattr(request.user.profile, "role", None)
+            if hasattr(request.user, "profile")
+            else None
+        )
+
+        if user_role == "patient":
+            # Patients only see their own record — filters add no value
+            return []
+
+        if user_role == "doctor":
+            # Doctors see only their own patients — gender and blood type are useful
+            return ["gender", "blood_type"]
+
+        if user_role in ["nurse", "pharmacy"]:
+            # Nurses/pharmacy see all patients — a few useful clinical filters
+            return ["gender", "blood_type", "state"]
+
+        # Admin and superuser — full filter set
+        return [
+            "gender",
+            "blood_type",
+            "state",
+            "assigned_doctor",
+            "created_at",
+            "updated_at",
+        ]
+
     def get_queryset(self, request):
         """Filter patients based on user role."""
         qs = super().get_queryset(request)
@@ -686,8 +765,20 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
             return qs.none()
 
     def get_readonly_fields(self, request, obj=None):
-        """Set readonly fields based on user role."""
-        readonly_fields = list(self.readonly_fields)
+        """Set readonly fields based on user role.
+
+        Editable fields per role:
+          admin/superuser — everything except auto-generated fields
+          patient         — insurance_number, phone_primary, phone_secondary,
+                            email_personal, all address fields
+          doctor          — personal info, contact, address
+                            (identity & care assignment are readonly)
+          nurse/pharmacy  — contact info (phone, email) and address only
+        """
+        # Base readonly fields are always locked (auto-generated / timestamps)
+        readonly_fields = list(
+            self.readonly_fields
+        )  # medical_id, age, created_at, updated_at
 
         user_role = (
             getattr(request.user.profile, "role", None)
@@ -696,29 +787,228 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
         )
 
         if user_role == "patient":
-            # Patients can only edit limited fields
             if obj and obj.user_profile != request.user.profile:
-                # Patient trying to edit another patient's record - make all readonly
+                # Patient attempting to view another patient's record — lock everything
                 return [field.name for field in self.model._meta.fields]
-            else:
-                # Patient editing their own record - some fields editable, assigned_doctor always readonly
-                readonly_fields.extend(
-                    ["user_profile", "date_of_birth", "gender", "assigned_doctor"]
-                )
-        elif user_role == "doctor":
-            # Doctors can edit patient info but cannot change assignment
-            readonly_fields.append("assigned_doctor")
-        elif user_role in ["nurse", "pharmacy"]:
-            # Nurses and pharmacy staff cannot change assignments
-            readonly_fields.append("assigned_doctor")
-        # Admin and superuser can edit assigned_doctor field
+            # Patient editing their own record:
+            # editable: insurance_number, phone_primary, phone_secondary,
+            #           email_personal, and all address fields
+            readonly_fields.extend(
+                [
+                    "user_profile",
+                    "assigned_doctor",
+                    "date_of_birth",
+                    "gender",
+                    "blood_type",
+                ]
+            )
 
+        elif user_role == "doctor":
+            # Doctors can update personal info, contact and address
+            # but cannot alter patient identity or care assignment
+            readonly_fields.extend(
+                [
+                    "user_profile",
+                    "assigned_doctor",
+                ]
+            )
+
+        elif user_role in ["nurse", "pharmacy"]:
+            # Nurses/pharmacy can only update contact & address info;
+            # all clinical/identity fields are readonly
+            readonly_fields.extend(
+                [
+                    "user_profile",
+                    "assigned_doctor",
+                    "date_of_birth",
+                    "gender",
+                    "blood_type",
+                    "insurance_number",
+                ]
+            )
+
+        # Admin and superuser: only the base readonly_fields apply
         return readonly_fields
 
+    def get_fieldsets(self, request, obj=None):
+        """Return role-specific fieldsets to control field visibility per role."""
+        user_role = (
+            getattr(request.user.profile, "role", None)
+            if hasattr(request.user, "profile")
+            else None
+        )
+
+        # ── Admin / superuser ── full view of all fields
+        if request.user.is_superuser or user_role == "admin":
+            return self.fieldsets
+
+        # ── Patient ── own record only; no user_profile, no care assignment exposed
+        if user_role == "patient":
+            return (
+                (
+                    "Patient Identity",
+                    {
+                        "fields": ("medical_id",),
+                        "description": "Your unique patient identification information",
+                    },
+                ),
+                (
+                    "Personal Information",
+                    {
+                        "fields": (
+                            "date_of_birth",
+                            "gender",
+                            "blood_type",
+                            "insurance_number",
+                        ),
+                        "description": "Please ensure your personal details are accurate",
+                    },
+                ),
+                (
+                    "Contact Information",
+                    {
+                        "fields": (
+                            "phone_primary",
+                            "phone_secondary",
+                            "email_personal",
+                        ),
+                        "description": "How we can reach you in case of emergencies or appointments",
+                    },
+                ),
+                (
+                    "Address",
+                    {
+                        "fields": (
+                            "address_line1",
+                            "address_line2",
+                            "city",
+                            "state",
+                            "postal_code",
+                            "country",
+                        ),
+                        "description": "Your current residential address",
+                    },
+                ),
+            )
+
+        # ── Doctor ── assigned patients; care assignment shown but readonly
+        if user_role == "doctor":
+            return (
+                (
+                    "Patient Identity",
+                    {
+                        "fields": ("user_profile", "medical_id"),
+                        "description": "Patient identification information",
+                    },
+                ),
+                (
+                    "Care Assignment",
+                    {
+                        "fields": ("assigned_doctor",),
+                        "description": "Assigned care provider (read-only for doctors)",
+                    },
+                ),
+                (
+                    "Personal Information",
+                    {
+                        "fields": (
+                            "date_of_birth",
+                            "gender",
+                            "blood_type",
+                            "insurance_number",
+                        ),
+                    },
+                ),
+                (
+                    "Contact Information",
+                    {
+                        "fields": (
+                            "phone_primary",
+                            "phone_secondary",
+                            "email_personal",
+                        ),
+                    },
+                ),
+                (
+                    "Address",
+                    {
+                        "fields": (
+                            "address_line1",
+                            "address_line2",
+                            "city",
+                            "state",
+                            "postal_code",
+                            "country",
+                        ),
+                    },
+                ),
+                (
+                    "System Information",
+                    {
+                        "fields": ("created_at", "updated_at"),
+                        "classes": ("collapse",),
+                    },
+                ),
+            )
+
+        # ── Nurse / Pharmacy ── view-focused; identity + care + personal + contact + address
+        if user_role in ["nurse", "pharmacy"]:
+            return (
+                (
+                    "Patient Identity",
+                    {
+                        "fields": ("user_profile", "medical_id"),
+                        "description": "Patient identification information",
+                    },
+                ),
+                (
+                    "Care Assignment",
+                    {
+                        "fields": ("assigned_doctor",),
+                        "description": "Assigned care provider (read-only)",
+                    },
+                ),
+                (
+                    "Personal Information",
+                    {
+                        "fields": ("date_of_birth", "gender", "blood_type"),
+                    },
+                ),
+                (
+                    "Contact Information",
+                    {
+                        "fields": (
+                            "phone_primary",
+                            "phone_secondary",
+                            "email_personal",
+                        ),
+                    },
+                ),
+                (
+                    "Address",
+                    {
+                        "fields": (
+                            "address_line1",
+                            "address_line2",
+                            "city",
+                            "state",
+                            "postal_code",
+                            "country",
+                        ),
+                    },
+                ),
+            )
+
+        # Fallback — full fieldsets
+        return self.fieldsets
+
     def has_add_permission(self, request):
-        """Control who can add new patient records."""
-        # Use the permission from PatientAccessMixin
-        return super().has_add_permission(request)
+        """Only admins and superusers can create new patient records."""
+        if request.user.is_superuser:
+            return True
+        if hasattr(request.user, "profile") and request.user.profile.role == "admin":
+            return True
+        return False
 
     def has_change_permission(self, request, obj=None):
         """Control who can change patient records."""
@@ -746,9 +1036,12 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
-        """Control who can delete patient records."""
-        # Use the permission from PatientAccessMixin
-        return super().has_delete_permission(request, obj)
+        """Only admins and superusers can delete patient records."""
+        if request.user.is_superuser:
+            return True
+        if hasattr(request.user, "profile") and request.user.profile.role == "admin":
+            return True
+        return False
 
     def has_view_permission(self, request, obj=None):
         """Allow patients to view their own records."""
