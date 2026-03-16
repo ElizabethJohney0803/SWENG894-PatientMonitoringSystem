@@ -494,5 +494,111 @@ class EmergencyContact(models.Model):
         super().save(*args, **kwargs)
 
 
+class TestResult(models.Model):
+    """
+    Laboratory and clinical test results linked to a patient and doctor.
+
+    FR-P-1: Patient can view their own test results.
+    FR-P-2: Display test name, result value, reference range, date.
+    FR-P-3: Patients cannot see other patients' results.
+    FR-D-1: Doctor can view test results of assigned patients.
+    FR-D-3: Results displayed chronologically per patient.
+    """
+
+    TEST_TYPE_CHOICES = [
+        ("blood_panel", "Blood Panel"),
+        ("metabolic_panel", "Metabolic Panel"),
+        ("urinalysis", "Urinalysis"),
+        ("hormone_panel", "Hormone Panel"),
+        ("lipid_panel", "Lipid Panel"),
+        ("imaging", "Imaging"),
+        ("other", "Other"),
+    ]
+
+    STATUS_CHOICES = [
+        ("normal", "Normal"),
+        ("low", "Low"),
+        ("high", "High"),
+        ("critical", "Critical"),
+        ("pending", "Pending"),
+    ]
+
+    patient = models.ForeignKey(
+        Patient,
+        on_delete=models.CASCADE,
+        related_name="test_results",
+        help_text="Patient this test result belongs to",
+    )
+    ordering_doctor = models.ForeignKey(
+        UserProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        limit_choices_to={"role": "doctor"},
+        related_name="ordered_tests",
+        help_text="Doctor who ordered this test",
+    )
+    test_name = models.CharField(
+        max_length=200,
+        help_text="Name of the test (e.g. Complete Blood Count)",
+    )
+    test_type = models.CharField(
+        max_length=20,
+        choices=TEST_TYPE_CHOICES,
+        default="other",
+        help_text="Category of the test",
+    )
+    test_date = models.DateField(
+        help_text="Date the test was performed",
+    )
+    result_value = models.CharField(
+        max_length=100,
+        help_text="Result value (e.g. '7.2', 'Negative', '14.5')",
+    )
+    result_unit = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Unit of measurement (e.g. g/dL, mg/dL)",
+    )
+    reference_range = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Normal reference range (e.g. '12.0-17.5 g/dL')",
+    )
+    status = models.CharField(
+        max_length=10,
+        choices=STATUS_CHOICES,
+        default="pending",
+        help_text="Result status relative to reference range",
+    )
+    doctor_notes = models.TextField(
+        blank=True,
+        help_text="Doctor's notes and interpretation of the results",
+    )
+    follow_up_required = models.BooleanField(
+        default=False,
+        help_text="Indicates whether a follow-up appointment is required",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-test_date", "-created_at"]
+        verbose_name = "Test Result"
+        verbose_name_plural = "Test Results"
+
+    def __str__(self):
+        patient_name = self.patient.user_profile.user.get_full_name()
+        return f"{self.test_name} \u2014 {patient_name} ({self.test_date})"
+
+    def clean(self):
+        if self.test_date and self.test_date > date.today():
+            raise ValidationError({"test_date": "Test date cannot be in the future."})
+        if self.ordering_doctor and self.ordering_doctor.role != "doctor":
+            raise ValidationError(
+                {"ordering_doctor": ("Ordering doctor must have role='doctor'.")}
+            )
+
+
 # Signal handlers removed - profile creation and group assignment
 # handled directly in admin forms and model save methods

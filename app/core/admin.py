@@ -4,9 +4,10 @@ from django.contrib.auth.models import User
 from django.contrib.auth.forms import UserCreationForm
 from django import forms
 from django.db import models
+from django.db.models import Q
 from django.http import HttpResponseRedirect
 from django.urls import reverse
-from .models import UserProfile, Patient, EmergencyContact
+from .models import UserProfile, Patient, EmergencyContact, TestResult
 from .mixins import PatientAccessMixin, AdminOnlyMixin
 
 
@@ -1253,6 +1254,421 @@ class EmergencyContactAdmin(admin.ModelAdmin):
         else:
             # Other roles see nothing
             return qs.none()
+
+
+class TestResultAdminForm(forms.ModelForm):
+    """Custom form: limits ordering_doctor choices to doctors only."""
+
+    class Meta:
+        model = TestResult
+        fields = "__all__"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if "ordering_doctor" in self.fields:
+            self.fields["ordering_doctor"].queryset = UserProfile.objects.filter(
+                role="doctor"
+            )
+            self.fields["ordering_doctor"].required = False
+
+
+@admin.register(TestResult)
+class TestResultAdmin(admin.ModelAdmin):
+    """
+    Admin interface for lab / clinical test results (PMS-013).
+
+    Role access — WF-S4-01, WF-S4-02:
+      admin / superuser — full CRUD, all patients
+      doctor            — add/edit results for assigned patients;
+                          ordering_doctor auto-set on save
+      nurse             — read-only list, all patients
+      patient           — read-only list, own results only (FR-P-1)
+      pharmacy          — no access
+    """
+
+    form = TestResultAdminForm
+
+    list_display = [
+        "test_date",
+        "test_name",
+        "get_patient_display",
+        "get_ordering_doctor_display",
+        "get_result_display",
+        "reference_range",
+        "status",
+        "follow_up_required",
+    ]
+    list_filter = ["test_type", "status", "ordering_doctor"]
+    search_fields = [
+        "test_name",
+        "patient__medical_id",
+        "patient__user_profile__user__first_name",
+        "patient__user_profile__user__last_name",
+        "ordering_doctor__user__first_name",
+        "ordering_doctor__user__last_name",
+    ]
+    search_help_text = (
+        "Search by test name, patient name / medical ID, " "or ordering doctor name"
+    )
+    readonly_fields = ["created_at", "updated_at"]
+    date_hierarchy = "test_date"
+    ordering = ["-test_date", "-created_at"]
+
+    fieldsets = (
+        (
+            "Patient Information",
+            {
+                "fields": ("patient", "ordering_doctor"),
+                "description": "Patient and doctor who ordered this test",
+            },
+        ),
+        (
+            "Test Information",
+            {
+                "fields": (
+                    "test_name",
+                    "test_type",
+                    "test_date",
+                    "result_value",
+                    "result_unit",
+                    "reference_range",
+                    "status",
+                ),
+                "description": "Test details and results \u2014 FR-P-2",
+            },
+        ),
+        (
+            "Doctor Notes",
+            {
+                "fields": ("doctor_notes", "follow_up_required"),
+                "description": ("Clinical notes and follow-up requirements"),
+            },
+        ),
+        (
+            "System Information",
+            {
+                "fields": ("created_at", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
+    )
+
+    # ── display helpers ───────────────────────────────────────────────
+
+    def get_patient_display(self, obj):
+        """Full patient name and medical ID."""
+        return str(obj.patient)
+
+    get_patient_display.short_description = "Patient"
+    get_patient_display.admin_order_field = "patient__user_profile__user__last_name"
+
+    def get_ordering_doctor_display(self, obj):
+        """Ordering doctor full name."""
+        if obj.ordering_doctor:
+            return (
+                obj.ordering_doctor.user.get_full_name()
+                or obj.ordering_doctor.user.username
+            )
+        return "\u2014"
+
+    get_ordering_doctor_display.short_description = "Ordering Doctor"
+    get_ordering_doctor_display.admin_order_field = "ordering_doctor__user__last_name"
+
+    def get_result_display(self, obj):
+        """Result value with unit appended when present."""
+        if obj.result_unit:
+            return f"{obj.result_value} {obj.result_unit}"
+        return obj.result_value
+
+    get_result_display.short_description = "Result"
+    get_result_display.admin_order_field = "result_value"
+
+    # ── role helper ───────────────────────────────────────────────────
+
+    def _user_role(self, request):
+        """Return the requesting user's role string, or None."""
+        return (
+            getattr(request.user.profile, "role", None)
+            if hasattr(request.user, "profile")
+            else None
+        )
+
+    # ── role-aware overrides ──────────────────────────────────────────
+
+    def get_list_display(self, request):
+        role = self._user_role(request)
+        if role == "patient":
+            # FR-P-2: show name, date, value, reference range, status
+            return [
+                "test_date",
+                "test_name",
+                "get_result_display",
+                "reference_range",
+                "status",
+                "doctor_notes",
+            ]
+        if role == "doctor":
+            return [
+                "test_date",
+                "test_name",
+                "get_patient_display",
+                "get_result_display",
+                "reference_range",
+                "status",
+                "follow_up_required",
+            ]
+        if role == "nurse":
+            return [
+                "test_date",
+                "test_name",
+                "get_patient_display",
+                "get_ordering_doctor_display",
+                "get_result_display",
+                "reference_range",
+                "status",
+            ]
+        # Admin / superuser
+        return list(self.list_display)
+
+    def get_list_filter(self, request):
+        role = self._user_role(request)
+        if role == "patient":
+            return ["status", "test_type"]
+        if role == "doctor":
+            return ["test_type", "status"]
+        # Admin, superuser, nurse
+        return ["test_type", "status", "ordering_doctor"]
+
+    def get_search_fields(self, request):
+        role = self._user_role(request)
+        if role == "patient":
+            return ["test_name"]
+        if role == "doctor":
+            return [
+                "test_name",
+                "patient__medical_id",
+                "patient__user_profile__user__first_name",
+                "patient__user_profile__user__last_name",
+            ]
+        return list(self.search_fields)
+
+    def get_readonly_fields(self, request, obj=None):
+        role = self._user_role(request)
+        if role in ["patient", "nurse"]:
+            # All fields read-only for patients and nurses
+            all_field_names = [
+                f.name for f in TestResult._meta.get_fields() if hasattr(f, "column")
+            ]
+            return list(set(all_field_names + ["created_at", "updated_at"]))
+        if role == "doctor":
+            # ordering_doctor auto-set; keep read-only in the form
+            return list(self.readonly_fields) + ["ordering_doctor"]
+        return list(self.readonly_fields)
+
+    def get_fieldsets(self, request, obj=None):
+        role = self._user_role(request)
+
+        if role == "patient":
+            # FR-P-2: result details + notes; hide patient FK
+            return (
+                (
+                    "Test Information",
+                    {
+                        "fields": (
+                            "test_name",
+                            "test_type",
+                            "test_date",
+                            "result_value",
+                            "result_unit",
+                            "reference_range",
+                            "status",
+                        ),
+                        "description": ("Your laboratory test results \u2014 FR-P-2"),
+                    },
+                ),
+                (
+                    "Doctor Notes",
+                    {
+                        "fields": (
+                            "doctor_notes",
+                            "follow_up_required",
+                        ),
+                    },
+                ),
+            )
+
+        if role == "nurse":
+            return (
+                (
+                    "Patient Information",
+                    {"fields": ("patient", "ordering_doctor")},
+                ),
+                (
+                    "Test Information",
+                    {
+                        "fields": (
+                            "test_name",
+                            "test_type",
+                            "test_date",
+                            "result_value",
+                            "result_unit",
+                            "reference_range",
+                            "status",
+                        ),
+                    },
+                ),
+            )
+
+        if role == "doctor":
+            return (
+                (
+                    "Patient Information",
+                    {
+                        "fields": ("patient", "ordering_doctor"),
+                        "description": (
+                            "Patient filtered to your assigned patients. "
+                            "Ordering doctor is set automatically."
+                        ),
+                    },
+                ),
+                (
+                    "Test Information",
+                    {
+                        "fields": (
+                            "test_name",
+                            "test_type",
+                            "test_date",
+                            "result_value",
+                            "result_unit",
+                            "reference_range",
+                            "status",
+                        ),
+                    },
+                ),
+                (
+                    "Doctor Notes",
+                    {
+                        "fields": (
+                            "doctor_notes",
+                            "follow_up_required",
+                        ),
+                    },
+                ),
+            )
+
+        # Admin / superuser — full fieldsets
+        return self.fieldsets
+
+    # ── queryset ──────────────────────────────────────────────────────
+
+    def get_queryset(self, request):
+        """Role-scoped test results \u2014 FR-D-1, FR-P-1, FR-AA-2."""
+        qs = super().get_queryset(request)
+
+        if request.user.is_superuser:
+            return qs
+
+        if not hasattr(request.user, "profile"):
+            return qs.none()
+
+        role = request.user.profile.role
+
+        if role == "admin":
+            return qs
+        if role == "doctor":
+            # FR-D-1: results for assigned patients OR tests the doctor ordered.
+            # A doctor may be the ordering_doctor even if the patient has since
+            # been reassigned — both cases must be visible.
+            return qs.filter(
+                Q(patient__assigned_doctor=request.user.profile)
+                | Q(ordering_doctor=request.user.profile)
+            ).distinct()
+        if role == "patient":
+            # FR-P-1 / FR-P-3: only own results
+            return qs.filter(patient__user_profile=request.user.profile)
+        if role == "nurse":
+            # Nurses see all results (read-only)
+            return qs
+        return qs.none()
+
+    # ── permissions ───────────────────────────────────────────────────
+
+    def has_module_permission(self, request):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role in ["admin", "doctor", "nurse", "patient"]
+
+    def has_add_permission(self, request):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role in ["admin", "doctor"]
+
+    def has_change_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        role = request.user.profile.role
+        if role == "admin":
+            return True
+        if role == "doctor":
+            if obj is None:
+                return True
+            # Doctor may only edit results for their own patients
+            return obj.patient.assigned_doctor == request.user.profile
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role == "admin"
+
+    def has_view_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        role = request.user.profile.role
+        if role in ["admin", "doctor", "nurse"]:
+            return True
+        if role == "patient":
+            if obj is None:
+                return True
+            return obj.patient.user_profile == request.user.profile
+        return False
+
+    # ── FK filtering and auto-set ─────────────────────────────────────
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        """Filter patient dropdown for doctors; restrict doctor field."""
+        if db_field.name == "patient":
+            if (
+                not request.user.is_superuser
+                and hasattr(request.user, "profile")
+                and request.user.profile.role == "doctor"
+            ):
+                kwargs["queryset"] = Patient.objects.filter(
+                    assigned_doctor=request.user.profile
+                )
+        if db_field.name == "ordering_doctor":
+            kwargs["queryset"] = UserProfile.objects.filter(role="doctor")
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+    def save_model(self, request, obj, form, change):
+        """Auto-assign ordering_doctor when a doctor saves a new result."""
+        if (
+            not obj.ordering_doctor
+            and hasattr(request.user, "profile")
+            and request.user.profile.role == "doctor"
+        ):
+            obj.ordering_doctor = request.user.profile
+        super().save_model(request, obj, form, change)
 
 
 # Re-register UserAdmin with role-based functionality
