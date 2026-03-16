@@ -672,8 +672,10 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
         (
             "Care Assignment",
             {
-                "fields": ("assigned_doctor",),
-                "description": "Doctor assigned to this patient (admin-only)",
+                "fields": ("assigned_doctor", "assigned_nurse"),
+                "description": (
+                    "Doctor and nurse assigned to this patient " "(admin-only)"
+                ),
             },
         ),
         (
@@ -818,6 +820,18 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
     get_assigned_doctor.short_description = "Assigned Doctor"
     get_assigned_doctor.admin_order_field = "assigned_doctor__user__last_name"
 
+    def get_assigned_nurse(self, obj):
+        """Display assigned nurse's name."""
+        if obj.assigned_nurse:
+            return (
+                obj.assigned_nurse.user.get_full_name()
+                or obj.assigned_nurse.user.username
+            )
+        return "Unassigned"
+
+    get_assigned_nurse.short_description = "Assigned Nurse"
+    get_assigned_nurse.admin_order_field = "assigned_nurse__user__last_name"
+
     def age(self, obj):
         """Display patient's age."""
         return obj.age
@@ -848,8 +862,21 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
                 "city",
             ]
 
-        if user_role in ["nurse", "pharmacy"]:
-            # Nurses/pharmacy focus on identification, assignment and contact
+        if user_role == "nurse":
+            # Nurses focus on their assigned patients
+            return [
+                "medical_id",
+                "get_patient_name",
+                "get_assigned_doctor",
+                "get_assigned_nurse",
+                "age",
+                "gender",
+                "phone_primary",
+                "city",
+            ]
+
+        if user_role == "pharmacy":
+            # Pharmacy focuses on identification and contact
             return [
                 "medical_id",
                 "get_patient_name",
@@ -865,6 +892,7 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
             "medical_id",
             "get_patient_name",
             "get_assigned_doctor",
+            "get_assigned_nurse",
             "age",
             "gender",
             "phone_primary",
@@ -890,16 +918,21 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
             # own patients already, so additional filtering adds little value
             return []
 
-        if user_role in ["nurse", "pharmacy"]:
-            # Nurses/pharmacy see all patients — clinical + city filter
+        if user_role == "nurse":
+            # Nurses see only their assigned patients — no extra filter needed
+            return []
+
+        if user_role == "pharmacy":
+            # Pharmacy sees all patients — basic clinical filter
             return ["gender", "blood_type", "state", CityListFilter]
 
-        # Admin and superuser — full filter set (WF-S3-01: Assigned Doctor, Gender, City)
+        # Admin and superuser — full filter set
         return [
             "gender",
             "blood_type",
             "state",
             "assigned_doctor",
+            "assigned_nurse",
             CityListFilter,
             "created_at",
             "updated_at",
@@ -931,8 +964,11 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
         elif user_role == "doctor":
             # Doctors can only see patients assigned to them
             return qs.filter(assigned_doctor=request.user.profile)
-        elif user_role in ["nurse", "pharmacy"]:
-            # Nurses and pharmacy staff can see all patients
+        elif user_role == "nurse":
+            # FR-N-1: nurses see only their assigned patients
+            return qs.filter(assigned_nurse=request.user.profile)
+        elif user_role == "pharmacy":
+            # Pharmacy staff can see all patients
             return qs
         else:
             # Other roles see nothing
@@ -971,6 +1007,7 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
                 [
                     "user_profile",
                     "assigned_doctor",
+                    "assigned_nurse",
                     "date_of_birth",
                     "gender",
                     "blood_type",
@@ -984,6 +1021,7 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
                 [
                     "user_profile",
                     "assigned_doctor",
+                    "assigned_nurse",
                 ]
             )
 
@@ -994,6 +1032,7 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
                 [
                     "user_profile",
                     "assigned_doctor",
+                    "assigned_nurse",
                     "date_of_birth",
                     "gender",
                     "blood_type",
@@ -1084,8 +1123,13 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
                 (
                     "Care Assignment",
                     {
-                        "fields": ("assigned_doctor",),
-                        "description": "Assigned care provider (read-only for doctors)",
+                        "fields": (
+                            "assigned_doctor",
+                            "assigned_nurse",
+                        ),
+                        "description": (
+                            "Assigned care providers " "(read-only for doctors)"
+                        ),
                     },
                 ),
                 (
@@ -1161,8 +1205,11 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
                 (
                     "Care Assignment",
                     {
-                        "fields": ("assigned_doctor",),
-                        "description": "Assigned care provider (read-only)",
+                        "fields": (
+                            "assigned_doctor",
+                            "assigned_nurse",
+                        ),
+                        "description": ("Assigned care providers (read-only)"),
                     },
                 ),
                 (
@@ -1290,6 +1337,14 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
         else:
             super().save_formset(request, form, formset, change)
 
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        """Restrict FK dropdowns to appropriate roles."""
+        if db_field.name == "assigned_doctor":
+            kwargs["queryset"] = UserProfile.objects.filter(role="doctor")
+        if db_field.name == "assigned_nurse":
+            kwargs["queryset"] = UserProfile.objects.filter(role="nurse")
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
     def has_add_permission(self, request):
         """Only admins and superusers can create new patient records."""
         if request.user.is_superuser:
@@ -1310,9 +1365,18 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
 
         user_role = request.user.profile.role
 
-        # Allow admin and medical staff full access
-        if user_role in ["admin", "doctor", "nurse", "pharmacy"]:
+        if user_role == "admin":
             return True
+
+        if user_role == "doctor":
+            if obj is None:  # Changelist view — allow to see the list
+                return True
+            # Object-level: only assigned patients
+            return obj.assigned_doctor == request.user.profile
+
+        # Nurses and pharmacy are read-only via has_view_permission
+        if user_role in ["nurse", "pharmacy"]:
+            return False
 
         # Allow patients to change their own records
         if user_role == "patient":
@@ -1792,8 +1856,8 @@ class TestResultAdmin(admin.ModelAdmin):
             # FR-P-1 / FR-P-3: only own results
             return qs.filter(patient__user_profile=request.user.profile)
         if role == "nurse":
-            # Nurses see all results (read-only)
-            return qs
+            # FR-N-1: nurse sees results for their assigned patients only
+            return qs.filter(patient__assigned_nurse=request.user.profile)
         return qs.none()
 
     # ── permissions ───────────────────────────────────────────────────
@@ -1972,8 +2036,10 @@ class MedicationAdmin(admin.ModelAdmin):
             # Doctor sees medications for their assigned patients only
             return qs.filter(patient__assigned_doctor=request.user.profile).distinct()
         if role in ["nurse", "pharmacy"]:
-            # Nurse/pharmacy see all medications (read-only via permissions)
-            return qs
+            # Nurse: only assigned patients; pharmacy: all
+            if role == "nurse":
+                return qs.filter(patient__assigned_nurse=request.user.profile)
+            return qs  # pharmacy sees all
         if role == "patient":
             return qs.filter(patient__user_profile=request.user.profile)
         return qs.none()

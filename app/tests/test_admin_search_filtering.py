@@ -27,6 +27,7 @@ from core.models import Patient, UserProfile
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _make_request(factory, user):
     """Return a GET request authenticated as *user*."""
     request = factory.get("/")
@@ -53,6 +54,7 @@ def _make_patient(username, first_name, last_name, city="", gender="M"):
 # ─────────────────────────────────────────────────────────────────────────────
 # CityListFilter unit tests
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.django_db
 @pytest.mark.unit
@@ -123,6 +125,7 @@ class TestCityListFilter:
 # search_help_text
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 @pytest.mark.admin
 class TestPatientAdminSearchHelpText:
@@ -143,6 +146,7 @@ class TestPatientAdminSearchHelpText:
 # ─────────────────────────────────────────────────────────────────────────────
 # get_search_fields() per role  (FR-D-6)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.django_db
 @pytest.mark.unit
@@ -205,7 +209,9 @@ class TestGetSearchFieldsPerRole:
     def test_pharmacy_gets_same_search_fields_as_nurse(self, pharmacy_user, nurse_user):
         """Pharmacy and nurse should have the same search field set."""
         factory = self.factory
-        pharmacy_fields = self.pa.get_search_fields(_make_request(factory, pharmacy_user))
+        pharmacy_fields = self.pa.get_search_fields(
+            _make_request(factory, pharmacy_user)
+        )
         nurse_fields = self.pa.get_search_fields(_make_request(factory, nurse_user))
         assert set(pharmacy_fields) == set(nurse_fields)
 
@@ -249,6 +255,7 @@ class TestGetSearchFieldsPerRole:
 # get_list_filter() per role  (WF-S3-01)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.django_db
 @pytest.mark.unit
 @pytest.mark.admin
@@ -272,14 +279,15 @@ class TestGetListFilterPerRole:
         request = _make_request(self.factory, doctor_user)
         assert self.pa.get_list_filter(request) == []
 
-    def test_nurse_filters_include_city(self, nurse_user):
+    def test_nurse_filters_are_empty(self, nurse_user):
+        """Nurse sees only their assigned patients — no sidebar filters needed."""
         request = _make_request(self.factory, nurse_user)
-        filters = self.pa.get_list_filter(request)
-        assert CityListFilter in filters
+        assert self.pa.get_list_filter(request) == []
 
-    def test_nurse_filters_include_gender(self, nurse_user):
+    def test_nurse_has_no_gender_filter(self, nurse_user):
+        """Nurse queryset is scoped by assignment, not filtered by demographics."""
         request = _make_request(self.factory, nurse_user)
-        assert "gender" in self.pa.get_list_filter(request)
+        assert "gender" not in self.pa.get_list_filter(request)
 
     def test_pharmacy_filters_include_city(self, pharmacy_user):
         request = _make_request(self.factory, pharmacy_user)
@@ -299,7 +307,9 @@ class TestGetListFilterPerRole:
         request = _make_request(self.factory, admin_user)
         assert "gender" in self.pa.get_list_filter(request)
 
-    def test_superuser_filters_include_city_and_assigned_doctor(self, django_user_model):
+    def test_superuser_filters_include_city_and_assigned_doctor(
+        self, django_user_model
+    ):
         superuser = django_user_model.objects.create_superuser(
             username="su_filter", password="testpass"
         )
@@ -312,6 +322,7 @@ class TestGetListFilterPerRole:
 # ─────────────────────────────────────────────────────────────────────────────
 # HTTP changelist — search and filter via Django test client
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.django_db
 @pytest.mark.integration
@@ -359,9 +370,7 @@ class TestPatientAdminChangelistSearch:
     def test_admin_search_no_results_is_handled_gracefully(self, admin_user):
         """Searching for a non-existent string should return 200 with empty results."""
         self._login(admin_user)
-        response = self.client.get(
-            self.CHANGELIST_URL, {"q": "ZZZNOMATCH99999"}
-        )
+        response = self.client.get(self.CHANGELIST_URL, {"q": "ZZZNOMATCH99999"})
         assert response.status_code == 200
 
     def test_admin_search_by_assigned_doctor_name(
@@ -453,8 +462,12 @@ class TestPatientAdminChangelistSearch:
 
     def test_admin_gender_filter_returns_correct_patients(self, admin_user):
         """?gender=M should return only male patients."""
-        p_male = _make_patient("p_male_http", "George", "Hill", city="Portland", gender="M")
-        p_female = _make_patient("p_female_http", "Helen", "Ward", city="Portland", gender="F")
+        p_male = _make_patient(
+            "p_male_http", "George", "Hill", city="Portland", gender="M"
+        )
+        p_female = _make_patient(
+            "p_female_http", "Helen", "Ward", city="Portland", gender="F"
+        )
 
         self._login(admin_user)
         response = self.client.get(self.CHANGELIST_URL, {"gender": "M"})
@@ -489,7 +502,9 @@ class TestPatientAdminChangelistSearch:
         p_other_name = _make_patient("p_combo_o2", "Zara", "Patel", city="Chicago")
 
         self._login(admin_user)
-        response = self.client.get(self.CHANGELIST_URL, {"q": "Russo", "city": "Chicago"})
+        response = self.client.get(
+            self.CHANGELIST_URL, {"q": "Russo", "city": "Chicago"}
+        )
         assert response.status_code == 200
         content = response.content.decode()
 

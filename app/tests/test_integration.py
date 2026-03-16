@@ -1050,10 +1050,11 @@ class TestPatientDoctorAssignmentSystemIntegration:
         doctor_queryset = patient_admin.get_queryset(doctor_request)
         assert patient not in doctor_queryset
 
-        # Nurse can see all patients (including unassigned)
+        # Nurse can only see patients assigned to them (FR-N-1)
+        # This nurse has no patients assigned, so sees none
         nurse_request = MockRequest(nurse_user)
         nurse_queryset = patient_admin.get_queryset(nurse_request)
-        assert patient in nurse_queryset
+        assert patient not in nurse_queryset
 
         # Patient can see their own record
         patient_request = MockRequest(patient_user)

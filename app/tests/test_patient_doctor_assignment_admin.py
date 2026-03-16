@@ -151,10 +151,10 @@ class TestPatientDoctorAssignmentAdmin:
         queryset = admin.get_queryset(request)
         assert patient in queryset
 
-    def test_patient_admin_nurse_sees_all_patients(
+    def test_patient_admin_nurse_sees_only_assigned_patients(
         self, nurse_user, doctor_user, patient_user
     ):
-        """Test that nurses see all patients (not filtered by assignment)."""
+        """Test that nurses only see patients assigned to them (FR-N-1)."""
         patient = patient_user.profile.patient_record
         patient.assigned_doctor = doctor_user.profile
         patient.save()
@@ -163,8 +163,15 @@ class TestPatientDoctorAssignmentAdmin:
         request = self.factory.get("/")
         request.user = nurse_user
 
+        # Nurse has no patients assigned — should see none
         queryset = admin.get_queryset(request)
-        assert patient in queryset
+        assert patient not in queryset
+
+        # Assign the nurse and confirm they now see the patient
+        patient.assigned_nurse = nurse_user.profile
+        patient.save()
+        queryset2 = admin.get_queryset(request)
+        assert patient in queryset2
 
     def test_patient_admin_readonly_fields_for_roles(
         self, doctor_user, nurse_user, admin_user, patient_user

@@ -407,12 +407,24 @@ class TestTestResultAdminQueryset:
         assert my_result in qs
         assert other_result not in qs
 
-    def test_nurse_sees_all_results(self, nurse_user, patient_user):
-        """Nurse has read-only access to all test results."""
+    def test_nurse_sees_only_assigned_patient_results(self, nurse_user, patient_user):
+        """Nurse sees results only for patients assigned to them (FR-N-1)."""
         patient = patient_user.profile.patient_record
+        patient.assigned_nurse = nurse_user.profile
+        patient.save()
         tr = _make_result(patient, "CBC")
         qs = self.tra.get_queryset(_make_request(self.factory, nurse_user))
         assert tr in qs
+
+    def test_nurse_cannot_see_unassigned_patient_results(
+        self, nurse_user, patient_user
+    ):
+        """Nurse cannot see results for patients not assigned to them."""
+        patient = patient_user.profile.patient_record
+        # No assignment — nurse should not see this result
+        tr = _make_result(patient, "CBC")
+        qs = self.tra.get_queryset(_make_request(self.factory, nurse_user))
+        assert tr not in qs
 
     def test_pharmacy_sees_no_results(self, pharmacy_user, patient_user):
         """Pharmacy has no access to test results."""

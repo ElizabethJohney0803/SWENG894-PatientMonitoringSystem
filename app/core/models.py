@@ -244,6 +244,17 @@ class Patient(models.Model):
         help_text="Doctor assigned to this patient (admin-only assignment)",
     )
 
+    # Nurse assignment (admin-only) — FR-N-1
+    assigned_nurse = models.ForeignKey(
+        UserProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        limit_choices_to={"role": "nurse"},
+        related_name="assigned_nurse_patients",
+        help_text="Nurse assigned to this patient (admin-only assignment)",
+    )
+
     # Medical identification
     medical_id = models.CharField(
         max_length=20, unique=True, help_text="Unique medical record identifier"

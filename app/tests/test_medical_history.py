@@ -148,8 +148,7 @@ class TestMedicationModelFields:
     def test_str_past_status(self):
         pat_user = _make_patient_user("pat_str_past")
         patient = pat_user.profile.patient_record
-        med = _make_med(patient, name="Penicillin", status="past",
-                        end_date=YESTERDAY)
+        med = _make_med(patient, name="Penicillin", status="past", end_date=YESTERDAY)
         assert "Penicillin" in str(med)
 
     def test_ordering_current_before_past(self):
@@ -159,8 +158,9 @@ class TestMedicationModelFields:
         patient = pat_user.profile.patient_record
         patient.assigned_doctor = doc.profile
         patient.save()
-        _make_med(patient, doctor=doc, name="PastMed", status="past",
-                  end_date=YESTERDAY)
+        _make_med(
+            patient, doctor=doc, name="PastMed", status="past", end_date=YESTERDAY
+        )
         _make_med(patient, doctor=doc, name="CurrentMed", status="current")
         meds = list(Medication.objects.filter(patient=patient))
         assert meds[0].status == "current"
@@ -170,10 +170,8 @@ class TestMedicationModelFields:
         """Within same status, newer start_date comes first."""
         pat_user = _make_patient_user("pat_date_ord")
         patient = pat_user.profile.patient_record
-        older = _make_med(patient, name="Older",
-                          start_date=TODAY - timedelta(days=30))
-        newer = _make_med(patient, name="Newer",
-                          start_date=TODAY - timedelta(days=5))
+        older = _make_med(patient, name="Older", start_date=TODAY - timedelta(days=30))
+        newer = _make_med(patient, name="Newer", start_date=TODAY - timedelta(days=5))
         meds = list(Medication.objects.filter(patient=patient))
         assert meds[0].medication_name == "Newer"
         assert meds[1].medication_name == "Older"
@@ -280,8 +278,11 @@ class TestPatientMedicalHistoryFields:
         pat_user = _make_patient_user("pat_hist_def")
         patient = pat_user.profile.patient_record
         for field in (
-            "diagnoses", "procedures", "visit_notes",
-            "allergies", "chronic_conditions",
+            "diagnoses",
+            "procedures",
+            "visit_notes",
+            "allergies",
+            "chronic_conditions",
         ):
             assert getattr(patient, field) == ""
 
@@ -362,9 +363,7 @@ class TestMedicationRelationships:
         patient_pk = patient.pk
         # Delete patient user (cascades to Patient via UserProfile)
         pat_user.delete()
-        assert Medication.objects.filter(
-            patient__pk=patient_pk
-        ).count() == 0
+        assert Medication.objects.filter(patient__pk=patient_pk).count() == 0
 
     def test_doctor_delete_sets_null(self):
         """Deleting a prescribing doctor sets prescribing_doctor to NULL."""
@@ -419,9 +418,7 @@ class TestMedicationAdminQueryset:
         self.doc = _make_doctor_user("doc_qs")
         self.doc2 = _make_doctor_user("doc_qs2", first="Other", last="Doc")
 
-        self.pat_assigned = _make_patient_user(
-            "pat_qs_assigned"
-        ).profile.patient_record
+        self.pat_assigned = _make_patient_user("pat_qs_assigned").profile.patient_record
         self.pat_assigned.assigned_doctor = self.doc.profile
         self.pat_assigned.save()
 
@@ -451,9 +448,12 @@ class TestMedicationAdminQueryset:
         self.nurse = User.objects.create_user(
             username="nurse_qs_med", password="pass", is_staff=True
         )
-        UserProfile.objects.create(
+        nurse_profile = UserProfile.objects.create(
             user=self.nurse, role="nurse", license_number="RN-QS"
         )
+        # Assign nurse to pat_assigned so the nurse queryset includes that patient
+        self.pat_assigned.assigned_nurse = nurse_profile
+        self.pat_assigned.save()
 
         # Pharmacy user
         self.pharm = User.objects.create_user(
@@ -465,9 +465,7 @@ class TestMedicationAdminQueryset:
 
         # Patient user (own patient)
         self.patient_user = _make_patient_user("pat_qs_own")
-        _make_med(
-            self.patient_user.profile.patient_record, name="OwnDrug"
-        )
+        _make_med(self.patient_user.profile.patient_record, name="OwnDrug")
 
     def test_superuser_sees_all(self):
         req = _make_request(self.factory, self.admin)
@@ -489,12 +487,13 @@ class TestMedicationAdminQueryset:
         qs = self.ma.get_queryset(req)
         assert qs.count() == 0
 
-    def test_nurse_sees_all_meds(self):
+    def test_nurse_sees_only_assigned_patient_meds(self):
+        """Nurse sees medications only for their assigned patients (FR-N-1)."""
         req = _make_request(self.factory, self.nurse)
         qs = self.ma.get_queryset(req)
         pks = list(qs.values_list("pk", flat=True))
-        assert self.med_assigned.pk in pks
-        assert self.med_unassigned.pk in pks
+        assert self.med_assigned.pk in pks  # assigned patient's med visible
+        assert self.med_unassigned.pk not in pks  # unassigned patient's med hidden
 
     def test_pharmacy_sees_all_meds(self):
         req = _make_request(self.factory, self.pharm)
@@ -511,9 +510,7 @@ class TestMedicationAdminQueryset:
         assert "AssignedDrug" not in names
 
     def test_user_without_profile_sees_nothing(self):
-        bare = User.objects.create_user(
-            username="bare_qs_med", password="pass"
-        )
+        bare = User.objects.create_user(username="bare_qs_med", password="pass")
         req = _make_request(self.factory, bare)
         assert self.ma.get_queryset(req).count() == 0
 
@@ -535,14 +532,11 @@ class TestMedicationAdminPermissions:
         self.factory = RequestFactory()
 
         self.superuser = User.objects.create_user(
-            "perm_su_med", password="pass",
-            is_staff=True, is_superuser=True
+            "perm_su_med", password="pass", is_staff=True, is_superuser=True
         )
 
         def _staff(username, role, lic="X-00"):
-            u = User.objects.create_user(
-                username, password="pass", is_staff=True
-            )
+            u = User.objects.create_user(username, password="pass", is_staff=True)
             UserProfile.objects.create(user=u, role=role, license_number=lic)
             return u
 
@@ -680,9 +674,7 @@ class TestPatientAdminMedicalHistoryFieldsets:
         self.patient_obj = patient
 
         def _staff(username, role, lic="X-FS"):
-            u = User.objects.create_user(
-                username, password="pass", is_staff=True
-            )
+            u = User.objects.create_user(username, password="pass", is_staff=True)
             UserProfile.objects.create(user=u, role=role, license_number=lic)
             return u
 
@@ -690,8 +682,7 @@ class TestPatientAdminMedicalHistoryFieldsets:
         self.nurse_u = _staff("nurse_fs", "nurse", "N-FS")
         self.pharm_u = _staff("pharm_fs", "pharmacy", "P-FS")
         self.su = User.objects.create_user(
-            "su_fs", password="pass",
-            is_staff=True, is_superuser=True
+            "su_fs", password="pass", is_staff=True, is_superuser=True
         )
 
     def _all_fieldnames(self, fieldsets):
@@ -704,32 +695,52 @@ class TestPatientAdminMedicalHistoryFieldsets:
         req = _make_request(self.factory, self.admin_u)
         fs = self.pa.get_fieldsets(req, self.patient_obj)
         names = self._all_fieldnames(fs)
-        for f in ("diagnoses", "procedures", "visit_notes",
-                  "allergies", "chronic_conditions"):
+        for f in (
+            "diagnoses",
+            "procedures",
+            "visit_notes",
+            "allergies",
+            "chronic_conditions",
+        ):
             assert f in names, f"admin missing {f}"
 
     def test_superuser_sees_medical_history_fields(self):
         req = _make_request(self.factory, self.su)
         fs = self.pa.get_fieldsets(req, self.patient_obj)
         names = self._all_fieldnames(fs)
-        for f in ("diagnoses", "procedures", "visit_notes",
-                  "allergies", "chronic_conditions"):
+        for f in (
+            "diagnoses",
+            "procedures",
+            "visit_notes",
+            "allergies",
+            "chronic_conditions",
+        ):
             assert f in names
 
     def test_doctor_sees_medical_history_fields(self):
         req = _make_request(self.factory, self.doc)
         fs = self.pa.get_fieldsets(req, self.patient_obj)
         names = self._all_fieldnames(fs)
-        for f in ("diagnoses", "procedures", "visit_notes",
-                  "allergies", "chronic_conditions"):
+        for f in (
+            "diagnoses",
+            "procedures",
+            "visit_notes",
+            "allergies",
+            "chronic_conditions",
+        ):
             assert f in names, f"doctor missing {f}"
 
     def test_nurse_sees_medical_history_fields(self):
         req = _make_request(self.factory, self.nurse_u)
         fs = self.pa.get_fieldsets(req, self.patient_obj)
         names = self._all_fieldnames(fs)
-        for f in ("diagnoses", "procedures", "visit_notes",
-                  "allergies", "chronic_conditions"):
+        for f in (
+            "diagnoses",
+            "procedures",
+            "visit_notes",
+            "allergies",
+            "chronic_conditions",
+        ):
             assert f in names, f"nurse missing {f}"
 
     def test_patient_hides_medical_history_fields(self):
@@ -788,9 +799,7 @@ class TestPatientAdminMedicalHistoryReadonly:
         self.patient_obj = self.pat_user.profile.patient_record
 
         def _staff(username, role, lic="X-RO"):
-            u = User.objects.create_user(
-                username, password="pass", is_staff=True
-            )
+            u = User.objects.create_user(username, password="pass", is_staff=True)
             UserProfile.objects.create(user=u, role=role, license_number=lic)
             return u
 
@@ -802,8 +811,13 @@ class TestPatientAdminMedicalHistoryReadonly:
     def test_nurse_has_all_history_fields_readonly(self):
         req = _make_request(self.factory, self.nurse_u)
         ro = self.pa.get_readonly_fields(req, self.patient_obj)
-        for f in ("diagnoses", "procedures", "visit_notes",
-                  "allergies", "chronic_conditions"):
+        for f in (
+            "diagnoses",
+            "procedures",
+            "visit_notes",
+            "allergies",
+            "chronic_conditions",
+        ):
             assert f in ro, f"nurse: {f} should be readonly"
 
     def test_pharmacy_has_allergies_readonly(self):
@@ -815,15 +829,25 @@ class TestPatientAdminMedicalHistoryReadonly:
         """Doctors should be able to EDIT medical history fields."""
         req = _make_request(self.factory, self.doctor_u)
         ro = self.pa.get_readonly_fields(req, self.patient_obj)
-        for f in ("diagnoses", "procedures", "visit_notes",
-                  "allergies", "chronic_conditions"):
+        for f in (
+            "diagnoses",
+            "procedures",
+            "visit_notes",
+            "allergies",
+            "chronic_conditions",
+        ):
             assert f not in ro, f"doctor should NOT have {f} readonly"
 
     def test_admin_does_not_have_history_fields_in_readonly(self):
         req = _make_request(self.factory, self.admin_u)
         ro = self.pa.get_readonly_fields(req, self.patient_obj)
-        for f in ("diagnoses", "procedures", "visit_notes",
-                  "allergies", "chronic_conditions"):
+        for f in (
+            "diagnoses",
+            "procedures",
+            "visit_notes",
+            "allergies",
+            "chronic_conditions",
+        ):
             assert f not in ro
 
 
@@ -852,9 +876,7 @@ class TestPatientAdminInlines:
         self.patient_obj = self.pat_user.profile.patient_record
 
         def _staff(username, role, lic="X-IL"):
-            u = User.objects.create_user(
-                username, password="pass", is_staff=True
-            )
+            u = User.objects.create_user(username, password="pass", is_staff=True)
             UserProfile.objects.create(user=u, role=role, license_number=lic)
             return u
 
@@ -863,8 +885,7 @@ class TestPatientAdminInlines:
         self.nurse_u = _staff("nurse_inl", "nurse", "N-IL")
         self.pharm_u = _staff("pharm_inl", "pharmacy", "P-IL")
         self.su = User.objects.create_user(
-            "su_inl", password="pass",
-            is_staff=True, is_superuser=True
+            "su_inl", password="pass", is_staff=True, is_superuser=True
         )
 
     def test_admin_gets_medication_inline(self):
@@ -899,8 +920,12 @@ class TestPatientAdminInlines:
 
     def test_all_roles_include_emergency_contact_inline(self):
         for user in (
-            self.admin_u, self.doctor_u, self.nurse_u,
-            self.pharm_u, self.pat_user, self.su
+            self.admin_u,
+            self.doctor_u,
+            self.nurse_u,
+            self.pharm_u,
+            self.pat_user,
+            self.su,
         ):
             req = _make_request(self.factory, user)
             inlines = self.pa.get_inlines(req, self.patient_obj)
@@ -923,8 +948,7 @@ class TestMedicationAdminHTTP:
 
         # Superuser
         self.admin_user = User.objects.create_user(
-            "http_su_med", password="pass",
-            is_staff=True, is_superuser=True
+            "http_su_med", password="pass", is_staff=True, is_superuser=True
         )
 
         # Doctor with assigned patient
@@ -940,8 +964,11 @@ class TestMedicationAdminHTTP:
             patient, doctor=self.doc, name="Metformin", status="current"
         )
         self.med_past = _make_med(
-            patient, doctor=self.doc, name="Penicillin", status="past",
-            end_date=YESTERDAY
+            patient,
+            doctor=self.doc,
+            name="Penicillin",
+            status="past",
+            end_date=YESTERDAY,
         )
 
         # Nurse
@@ -1009,26 +1036,21 @@ class TestPatientAdminMedicalHistoryHTTP:
     def setup(self, db):
         self.client = Client()
         self.su = User.objects.create_user(
-            "http_su_mhist", password="pass",
-            is_staff=True, is_superuser=True
+            "http_su_mhist", password="pass", is_staff=True, is_superuser=True
         )
         pat_user = _make_patient_user("http_ph_pat")
         self.patient = pat_user.profile.patient_record
 
     def test_patient_change_page_includes_medical_history_section(self):
         self.client.force_login(self.su)
-        resp = self.client.get(
-            f"/admin/core/patient/{self.patient.pk}/change/"
-        )
+        resp = self.client.get(f"/admin/core/patient/{self.patient.pk}/change/")
         assert resp.status_code == 200
         content = resp.content.decode()
         assert "Medical History" in content
 
     def test_patient_change_page_includes_diagnoses_field(self):
         self.client.force_login(self.su)
-        resp = self.client.get(
-            f"/admin/core/patient/{self.patient.pk}/change/"
-        )
+        resp = self.client.get(f"/admin/core/patient/{self.patient.pk}/change/")
         content = resp.content.decode()
         assert "diagnoses" in content
 
@@ -1037,9 +1059,7 @@ class TestPatientAdminMedicalHistoryHTTP:
         self.patient.assigned_doctor = doc.profile
         self.patient.save()
         self.client.force_login(doc)
-        resp = self.client.get(
-            f"/admin/core/patient/{self.patient.pk}/change/"
-        )
+        resp = self.client.get(f"/admin/core/patient/{self.patient.pk}/change/")
         assert resp.status_code == 200
         content = resp.content.decode()
         assert "Medical History" in content
@@ -1048,13 +1068,14 @@ class TestPatientAdminMedicalHistoryHTTP:
         nurse = User.objects.create_user(
             "http_nurse_mhist", password="pass", is_staff=True
         )
-        UserProfile.objects.create(
+        nurse_profile = UserProfile.objects.create(
             user=nurse, role="nurse", license_number="RN-HTTP2"
         )
+        # Assign nurse to patient so it appears in the nurse's queryset (FR-N-1)
+        self.patient.assigned_nurse = nurse_profile
+        self.patient.save()
         self.client.force_login(nurse)
-        resp = self.client.get(
-            f"/admin/core/patient/{self.patient.pk}/change/"
-        )
+        resp = self.client.get(f"/admin/core/patient/{self.patient.pk}/change/")
         assert resp.status_code == 200
         content = resp.content.decode()
         assert "Medical History" in content
