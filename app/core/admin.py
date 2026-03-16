@@ -7,7 +7,7 @@ from django.db import models
 from django.db.models import Q
 from django.http import HttpResponseRedirect
 from django.urls import reverse
-from .models import UserProfile, Patient, EmergencyContact, TestResult
+from .models import UserProfile, Patient, EmergencyContact, Medication, TestResult
 from .mixins import PatientAccessMixin, AdminOnlyMixin
 
 
@@ -567,6 +567,63 @@ class EmergencyContactInline(admin.StackedInline):
         return []
 
 
+class MedicationInline(admin.TabularInline):
+    """
+    Inline for patient medications (PMS-014).
+
+    - Admin / superuser : full add / edit / delete
+    - Doctor            : add / edit for assigned patients;
+                          prescribing_doctor auto-set via PatientAdmin.save_formset
+    - Nurse / Pharmacy  : read-only view (FR-N-2 / FR-Ph-1)
+    - Patient           : not shown (excluded by PatientAdmin.get_inlines)
+    """
+
+    model = Medication
+    extra = 0
+    fields = [
+        "medication_name",
+        "dosage",
+        "frequency",
+        "prescribing_doctor",
+        "start_date",
+        "end_date",
+        "status",
+        "notes",
+    ]
+
+    def get_readonly_fields(self, request, obj=None):
+        if hasattr(request.user, "profile"):
+            if request.user.profile.role in ["nurse", "pharmacy"]:
+                return list(self.fields)
+        return []
+
+    def has_add_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if hasattr(request.user, "profile"):
+            return request.user.profile.role in ["admin", "doctor"]
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if hasattr(request.user, "profile"):
+            return request.user.profile.role in ["admin", "doctor"]
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if hasattr(request.user, "profile"):
+            return request.user.profile.role == "admin"
+        return False
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "prescribing_doctor":
+            kwargs["queryset"] = UserProfile.objects.filter(role="doctor")
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+
 @admin.register(Patient)
 class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
     """Admin interface for patient records with role-based access."""
@@ -648,12 +705,46 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
             },
         ),
         (
+            "Medical History",
+            {
+                "fields": (
+                    "diagnoses",
+                    "procedures",
+                    "visit_notes",
+                    "allergies",
+                    "chronic_conditions",
+                ),
+                "description": (
+                    "Clinical diagnoses, procedures, prior visit notes, "
+                    "allergies and chronic conditions \u2014 FR-D-4"
+                ),
+                "classes": ("collapse",),
+            },
+        ),
+        (
             "System Information",
             {"fields": ("created_at", "updated_at"), "classes": ("collapse",)},
         ),
     )
 
     inlines = [EmergencyContactInline]
+
+    def get_inlines(self, request, obj=None):
+        """Show MedicationInline for clinical staff; hide it for patients."""
+        role = (
+            getattr(request.user.profile, "role", None)
+            if hasattr(request.user, "profile")
+            else None
+        )
+        if request.user.is_superuser or role in [
+            "admin",
+            "doctor",
+            "nurse",
+            "pharmacy",
+        ]:
+            return [EmergencyContactInline, MedicationInline]
+        # patient role — emergency contacts only
+        return [EmergencyContactInline]
 
     # WF-S3-01: hint text shown below the search box in the changelist
     search_help_text = (
@@ -907,6 +998,12 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
                     "gender",
                     "blood_type",
                     "insurance_number",
+                    # Medical History — always readonly for nurse/pharmacy
+                    "diagnoses",
+                    "procedures",
+                    "visit_notes",
+                    "allergies",
+                    "chronic_conditions",
                 ]
             )
 
@@ -1026,6 +1123,23 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
                     },
                 ),
                 (
+                    "Medical History",
+                    {
+                        "fields": (
+                            "diagnoses",
+                            "procedures",
+                            "visit_notes",
+                            "allergies",
+                            "chronic_conditions",
+                        ),
+                        "description": (
+                            "Clinical diagnoses, procedures and prior "
+                            "visit notes \u2014 FR-D-4"
+                        ),
+                        "classes": ("collapse",),
+                    },
+                ),
+                (
                     "System Information",
                     {
                         "fields": ("created_at", "updated_at"),
@@ -1034,8 +1148,8 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
                 ),
             )
 
-        # ── Nurse / Pharmacy ── view-focused; identity + care + personal + contact + address
-        if user_role in ["nurse", "pharmacy"]:
+        # ── Nurse ── read-only clinical view + medical history (FR-N-2)
+        if user_role == "nurse":
             return (
                 (
                     "Patient Identity",
@@ -1080,10 +1194,101 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
                         ),
                     },
                 ),
+                (
+                    "Medical History",
+                    {
+                        "fields": (
+                            "diagnoses",
+                            "procedures",
+                            "visit_notes",
+                            "allergies",
+                            "chronic_conditions",
+                        ),
+                        "description": (
+                            "Clinical history \u2014 read-only for nurses " "(FR-N-2)"
+                        ),
+                        "classes": ("collapse",),
+                    },
+                ),
+            )
+
+        # ── Pharmacy ── allergy info only (FR-Ph-3)
+        if user_role == "pharmacy":
+            return (
+                (
+                    "Patient Identity",
+                    {
+                        "fields": ("user_profile", "medical_id"),
+                        "description": "Patient identification information",
+                    },
+                ),
+                (
+                    "Care Assignment",
+                    {
+                        "fields": ("assigned_doctor",),
+                        "description": "Assigned care provider (read-only)",
+                    },
+                ),
+                (
+                    "Personal Information",
+                    {
+                        "fields": ("date_of_birth", "gender", "blood_type"),
+                    },
+                ),
+                (
+                    "Contact Information",
+                    {
+                        "fields": (
+                            "phone_primary",
+                            "phone_secondary",
+                            "email_personal",
+                        ),
+                    },
+                ),
+                (
+                    "Address",
+                    {
+                        "fields": (
+                            "address_line1",
+                            "address_line2",
+                            "city",
+                            "state",
+                            "postal_code",
+                            "country",
+                        ),
+                    },
+                ),
+                (
+                    "Allergy Information",
+                    {
+                        "fields": ("allergies",),
+                        "description": (
+                            "Patient allergy information \u2014 " "FR-Ph-3 (read-only)"
+                        ),
+                    },
+                ),
             )
 
         # Fallback — full fieldsets
         return self.fieldsets
+
+    def save_formset(self, request, form, formset, change):
+        """Auto-set prescribing_doctor when a doctor adds a medication."""
+        if formset.model is Medication:
+            instances = formset.save(commit=False)
+            for obj in instances:
+                if (
+                    not obj.prescribing_doctor
+                    and hasattr(request.user, "profile")
+                    and request.user.profile.role == "doctor"
+                ):
+                    obj.prescribing_doctor = request.user.profile
+                obj.save()
+            formset.save_m2m()
+            for obj in formset.deleted_objects:
+                obj.delete()
+        else:
+            super().save_formset(request, form, formset, change)
 
     def has_add_permission(self, request):
         """Only admins and superusers can create new patient records."""
@@ -1668,6 +1873,190 @@ class TestResultAdmin(admin.ModelAdmin):
             and request.user.profile.role == "doctor"
         ):
             obj.ordering_doctor = request.user.profile
+        super().save_model(request, obj, form, change)
+
+
+# ── Medication Admin ──────────────────────────────────────────────────────
+
+
+@admin.register(Medication)
+class MedicationAdmin(admin.ModelAdmin):
+    """Admin view for Medication records — FR-D-4 / FR-N-2 / FR-Ph-1."""
+
+    list_display = [
+        "medication_name",
+        "dosage",
+        "frequency",
+        "get_patient_display",
+        "get_doctor_display",
+        "start_date",
+        "end_date",
+        "status",
+    ]
+    list_filter = ["status", "prescribing_doctor"]
+    search_fields = [
+        "medication_name",
+        "patient__medical_id",
+        "patient__user_profile__user__first_name",
+        "patient__user_profile__user__last_name",
+        "prescribing_doctor__user__first_name",
+        "prescribing_doctor__user__last_name",
+    ]
+    ordering = ["status", "-start_date"]
+    readonly_fields = ["created_at", "updated_at"]
+
+    fieldsets = (
+        (
+            None,
+            {
+                "fields": (
+                    "patient",
+                    "medication_name",
+                    "dosage",
+                    "frequency",
+                    "prescribing_doctor",
+                    "start_date",
+                    "end_date",
+                    "status",
+                    "notes",
+                )
+            },
+        ),
+        (
+            "Timestamps",
+            {
+                "fields": ("created_at", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
+    )
+
+    # ── Display helpers ──────────────────────────────────────────────
+
+    def get_patient_display(self, obj):
+        """Full name + medical ID."""
+        name = (
+            obj.patient.user_profile.user.get_full_name()
+            or obj.patient.user_profile.user.username
+        )
+        return f"{name} ({obj.patient.medical_id})"
+
+    get_patient_display.short_description = "Patient"
+    get_patient_display.admin_order_field = "patient__user_profile__user__last_name"
+
+    def get_doctor_display(self, obj):
+        """Prescribing doctor full name."""
+        if obj.prescribing_doctor:
+            return (
+                obj.prescribing_doctor.user.get_full_name()
+                or obj.prescribing_doctor.user.username
+            )
+        return "—"
+
+    get_doctor_display.short_description = "Prescribing Doctor"
+    get_doctor_display.admin_order_field = "prescribing_doctor__user__last_name"
+
+    # ── Queryset ─────────────────────────────────────────────────────
+
+    def get_queryset(self, request):
+        """Scope results by role (FR-D-4 / FR-N-2 / FR-Ph-1)."""
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        if not hasattr(request.user, "profile"):
+            return qs.none()
+        role = request.user.profile.role
+        if role == "admin":
+            return qs
+        if role == "doctor":
+            # Doctor sees medications for their assigned patients only
+            return qs.filter(patient__assigned_doctor=request.user.profile).distinct()
+        if role in ["nurse", "pharmacy"]:
+            # Nurse/pharmacy see all medications (read-only via permissions)
+            return qs
+        if role == "patient":
+            return qs.filter(patient__user_profile=request.user.profile)
+        return qs.none()
+
+    # ── Module / object permissions ──────────────────────────────────
+
+    def has_module_permission(self, request):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        # Patients do not get a standalone Medication admin
+        return request.user.profile.role in [
+            "admin",
+            "doctor",
+            "nurse",
+            "pharmacy",
+        ]
+
+    def has_add_permission(self, request):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role in ["admin", "doctor"]
+
+    def has_change_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        role = request.user.profile.role
+        if role == "admin":
+            return True
+        if role == "doctor":
+            if obj is None:
+                return True
+            return obj.patient.assigned_doctor == request.user.profile
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role == "admin"
+
+    def has_view_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role in [
+            "admin",
+            "doctor",
+            "nurse",
+            "pharmacy",
+        ]
+
+    # ── FK filtering and auto-set ─────────────────────────────────────
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "patient":
+            if (
+                not request.user.is_superuser
+                and hasattr(request.user, "profile")
+                and request.user.profile.role == "doctor"
+            ):
+                kwargs["queryset"] = Patient.objects.filter(
+                    assigned_doctor=request.user.profile
+                )
+        if db_field.name == "prescribing_doctor":
+            kwargs["queryset"] = UserProfile.objects.filter(role="doctor")
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+    def save_model(self, request, obj, form, change):
+        """Auto-assign prescribing_doctor when a doctor saves."""
+        if (
+            not obj.prescribing_doctor
+            and hasattr(request.user, "profile")
+            and request.user.profile.role == "doctor"
+        ):
+            obj.prescribing_doctor = request.user.profile
         super().save_model(request, obj, form, change)
 
 

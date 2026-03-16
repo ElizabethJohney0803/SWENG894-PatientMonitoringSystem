@@ -313,6 +313,43 @@ class Patient(models.Model):
         help_text="Personal email address (separate from login email)",
     )
 
+    # Medical History fields (PMS-014) — FR-D-4
+    diagnoses = models.TextField(
+        blank=True,
+        help_text=(
+            "Current and past diagnoses — editable by Doctor/Admin, "
+            "read-only for Nurse, hidden from Patient"
+        ),
+    )
+    procedures = models.TextField(
+        blank=True,
+        help_text=(
+            "Surgical and clinical procedures performed — "
+            "read-only for Nurse, hidden from Patient"
+        ),
+    )
+    visit_notes = models.TextField(
+        blank=True,
+        help_text=(
+            "Prior visit notes and clinical observations — "
+            "read-only for Nurse, hidden from Patient"
+        ),
+    )
+    allergies = models.TextField(
+        blank=True,
+        help_text=(
+            "Known allergies (medications, food, environmental) — "
+            "visible to Doctor/Nurse/Pharmacy/Admin, hidden from Patient "
+            "in admin — FR-Ph-3"
+        ),
+    )
+    chronic_conditions = models.TextField(
+        blank=True,
+        help_text=(
+            "Long-term chronic conditions — " "read-only for Nurse, hidden from Patient"
+        ),
+    )
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -492,6 +529,88 @@ class EmergencyContact(models.Model):
             ).exclude(pk=self.pk).update(is_primary_contact=False)
 
         super().save(*args, **kwargs)
+
+
+class Medication(models.Model):
+    """
+    Medication records linked to a patient and prescribing doctor.
+
+    FR-D-5: Doctor can view current and past medications of assigned patients.
+    FR-N-2: Nurse can view current medications of assigned patients.
+    FR-Ph-1/2: Pharmacy can view medication orders for patients.
+    """
+
+    STATUS_CHOICES = [
+        ("current", "Current"),
+        ("past", "Past"),
+    ]
+
+    patient = models.ForeignKey(
+        Patient,
+        on_delete=models.CASCADE,
+        related_name="medications",
+        help_text="Patient this medication belongs to",
+    )
+    prescribing_doctor = models.ForeignKey(
+        UserProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        limit_choices_to={"role": "doctor"},
+        related_name="prescribed_medications",
+        help_text="Doctor who prescribed this medication",
+    )
+    medication_name = models.CharField(
+        max_length=200,
+        help_text="Name of the medication (e.g. Metformin)",
+    )
+    dosage = models.CharField(
+        max_length=100,
+        help_text="Dosage (e.g. 500 mg)",
+    )
+    frequency = models.CharField(
+        max_length=100,
+        help_text="Frequency (e.g. Twice daily)",
+    )
+    start_date = models.DateField(
+        help_text="Date the medication was started",
+    )
+    end_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date the medication was stopped (blank = ongoing)",
+    )
+    status = models.CharField(
+        max_length=10,
+        choices=STATUS_CHOICES,
+        default="current",
+        help_text="Whether the medication is currently active",
+    )
+    notes = models.TextField(
+        blank=True,
+        help_text="Additional notes or instructions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["status", "-start_date"]
+        verbose_name = "Medication"
+        verbose_name_plural = "Medications"
+
+    def __str__(self):
+        return (
+            f"{self.medication_name} ({self.dosage}) "
+            f"\u2014 {self.get_status_display()}"
+        )
+
+    def clean(self):
+        if self.end_date and self.start_date and self.end_date < self.start_date:
+            raise ValidationError({"end_date": "End date cannot be before start date."})
+        if self.prescribing_doctor and self.prescribing_doctor.role != "doctor":
+            raise ValidationError(
+                {"prescribing_doctor": ("Prescribing doctor must have role='doctor'.")}
+            )
 
 
 class TestResult(models.Model):
