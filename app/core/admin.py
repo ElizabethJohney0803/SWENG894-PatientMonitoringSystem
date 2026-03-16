@@ -10,6 +10,33 @@ from .models import UserProfile, Patient, EmergencyContact
 from .mixins import PatientAccessMixin, AdminOnlyMixin
 
 
+class CityListFilter(admin.SimpleListFilter):
+    """
+    Filter sidebar panel for city — WF-S3-01 'By City'.
+    Shows distinct cities drawn from actual Patient records.
+    """
+
+    title = "city"
+    parameter_name = "city"
+
+    def lookups(self, request, model_admin):
+        """Return (value, label) pairs for every distinct non-blank city."""
+        cities = (
+            Patient.objects.exclude(city="")
+            .exclude(city__isnull=True)
+            .values_list("city", flat=True)
+            .distinct()
+            .order_by("city")
+        )
+        return [(city, city) for city in cities]
+
+    def queryset(self, request, queryset):
+        """Filter the changelist queryset to the selected city."""
+        if self.value():
+            return queryset.filter(city=self.value())
+        return queryset
+
+
 class PatientAdminForm(forms.ModelForm):
     """Custom form for Patient admin with proper assigned_doctor handling."""
 
@@ -627,6 +654,59 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
 
     inlines = [EmergencyContactInline]
 
+    # WF-S3-01: hint text shown below the search box in the changelist
+    search_help_text = (
+        "Search by first name, last name, medical ID, or assigned doctor name — FR-D-6"
+    )
+
+    # Enable date drill-down in changelist for admin/superuser
+    date_hierarchy = "created_at"
+
+    def get_search_fields(self, request):
+        """
+        Return role-appropriate search fields (FR-D-6).
+
+        - patient   : no search (only their own record is shown)
+        - doctor    : name + medical ID over their assigned patients (FR-D-6)
+        - nurse /
+          pharmacy  : name, medical ID, phone, city across all patients
+        - admin /
+          superuser : full field set (includes assigned-doctor name, insurance,
+                      phone, city, etc.)
+        """
+        user_role = (
+            getattr(request.user.profile, "role", None)
+            if hasattr(request.user, "profile")
+            else None
+        )
+
+        if user_role == "patient":
+            # Patient sees only their own record — search is irrelevant
+            return []
+
+        if user_role == "doctor":
+            # FR-D-6: doctors search by name or medical ID within their own patients
+            return [
+                "medical_id",
+                "user_profile__user__first_name",
+                "user_profile__user__last_name",
+                "user_profile__user__username",
+            ]
+
+        if user_role in ["nurse", "pharmacy"]:
+            # Nurses / pharmacy: name, ID, phone and city
+            return [
+                "medical_id",
+                "user_profile__user__first_name",
+                "user_profile__user__last_name",
+                "user_profile__user__username",
+                "phone_primary",
+                "city",
+            ]
+
+        # Admin and superuser: full search capability
+        return list(self.search_fields)
+
     def get_patient_name(self, obj):
         """Display patient's full name."""
         return obj.user_profile.user.get_full_name() or obj.user_profile.user.username
@@ -714,19 +794,21 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
             return []
 
         if user_role == "doctor":
-            # Doctors see only their own patients — gender and blood type are useful
-            return ["gender", "blood_type"]
+            # WF-S3-01: filters hidden for Doctor view — they only see their
+            # own patients already, so additional filtering adds little value
+            return []
 
         if user_role in ["nurse", "pharmacy"]:
-            # Nurses/pharmacy see all patients — a few useful clinical filters
-            return ["gender", "blood_type", "state"]
+            # Nurses/pharmacy see all patients — clinical + city filter
+            return ["gender", "blood_type", "state", CityListFilter]
 
-        # Admin and superuser — full filter set
+        # Admin and superuser — full filter set (WF-S3-01: Assigned Doctor, Gender, City)
         return [
             "gender",
             "blood_type",
             "state",
             "assigned_doctor",
+            CityListFilter,
             "created_at",
             "updated_at",
         ]
