@@ -551,6 +551,3 @@ Coverage : core/admin.py 70% | core/models.py 80% | core/mixins.py 80%
 
 **All 8 Sprint 2 tasks accepted. 298/298 tests passing. No open defects.**
 
----
-
-*Patient Monitoring System — Sprint 2 Test Report · Generated March 15, 2026*
