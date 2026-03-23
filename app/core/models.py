@@ -730,5 +730,101 @@ class TestResult(models.Model):
             )
 
 
+class Appointment(models.Model):
+    """
+    Appointment records linking a patient to a doctor.
+
+    FR-P-4: Patient can view their own appointments.
+    FR-P-5: Appointment detail shows date, time, doctor, and location.
+    """
+
+    STATUS_CHOICES = [
+        ("scheduled", "Scheduled"),
+        ("confirmed", "Confirmed"),
+        ("completed", "Completed"),
+        ("cancelled", "Cancelled"),
+        ("no_show", "No Show"),
+    ]
+
+    APPOINTMENT_TYPE_CHOICES = [
+        ("initial_consultation", "Initial Consultation"),
+        ("follow_up", "Follow-Up"),
+        ("routine_checkup", "Routine Check-Up"),
+        ("lab_review", "Lab Review"),
+        ("urgent_care", "Urgent Care"),
+    ]
+
+    VALID_STATUSES = {c[0] for c in STATUS_CHOICES}
+    VALID_APPOINTMENT_TYPES = {c[0] for c in APPOINTMENT_TYPE_CHOICES}
+
+    patient = models.ForeignKey(
+        Patient,
+        on_delete=models.CASCADE,
+        related_name="appointments",
+        help_text="Patient for this appointment",
+    )
+    doctor = models.ForeignKey(
+        UserProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        limit_choices_to={"role": "doctor"},
+        related_name="doctor_appointments",
+        help_text="Doctor responsible for this appointment",
+    )
+    appointment_datetime = models.DateTimeField(
+        help_text="Scheduled date and time of the appointment",
+    )
+    appointment_type = models.CharField(
+        max_length=30,
+        choices=APPOINTMENT_TYPE_CHOICES,
+        help_text="Category of appointment",
+    )
+    status = models.CharField(
+        max_length=15,
+        choices=STATUS_CHOICES,
+        default="scheduled",
+        help_text="Current status of the appointment",
+    )
+    location = models.CharField(
+        max_length=200,
+        help_text="Room or clinic name where the appointment takes place",
+    )
+    notes = models.TextField(
+        blank=True,
+        help_text="Additional clinical or administrative notes",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["appointment_datetime"]
+        verbose_name = "Appointment"
+        verbose_name_plural = "Appointments"
+
+    def __str__(self):
+        patient_name = self.patient.user_profile.user.get_full_name()
+        appt_date = self.appointment_datetime.strftime("%Y-%m-%d %H:%M")
+        return f"{patient_name} — {appt_date}"
+
+    def clean(self):
+        if self.status not in self.VALID_STATUSES:
+            raise ValidationError(
+                {"status": f"'{self.status}' is not a valid status choice."}
+            )
+        if (
+            self.appointment_type
+            not in self.VALID_APPOINTMENT_TYPES
+        ):
+            raise ValidationError(
+                {
+                    "appointment_type": (
+                        f"'{self.appointment_type}' is not a valid "
+                        "appointment type."
+                    )
+                }
+            )
+
+
 # Signal handlers removed - profile creation and group assignment
 # handled directly in admin forms and model save methods
