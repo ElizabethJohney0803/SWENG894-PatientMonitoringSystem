@@ -7,6 +7,7 @@ from django.db import models
 from django.db.models import Q
 from django.http import HttpResponseRedirect
 from django.urls import reverse
+from django.utils import timezone
 from .models import (
     UserProfile,
     Patient,
@@ -2136,16 +2137,56 @@ class MedicationAdmin(admin.ModelAdmin):
 # ── Appointment Admin ─────────────────────────────────────────────────────
 
 
+class AppointmentTimeFilter(admin.SimpleListFilter):
+    """
+    Sidebar filter for patients: "Upcoming" vs "Past" appointments.
+
+    Upcoming — future datetime AND status not completed/cancelled.
+    Past      — past datetime OR status in completed/cancelled.
+    """
+
+    title = "time"
+    parameter_name = "time"
+
+    def lookups(self, request, model_admin):
+        return [
+            ("upcoming", "Upcoming"),
+            ("past", "Past"),
+        ]
+
+    def queryset(self, request, queryset):
+        now = timezone.now()
+        if self.value() == "upcoming":
+            return queryset.filter(appointment_datetime__gte=now).exclude(
+                status__in=["completed", "cancelled"]
+            )
+        if self.value() == "past":
+            return queryset.filter(
+                Q(appointment_datetime__lt=now)
+                | Q(status__in=["completed", "cancelled"])
+            )
+        return queryset
+
+
 @admin.register(Appointment)
 class AppointmentAdmin(admin.ModelAdmin):
     """
-    Admin interface for Appointment records — PBI-S3-09.
+    Admin interface for Appointment records.
+
+    PBI-S3-09 — Admin full CRUD with status filter and date hierarchy.
+    PBI-S3-10 — Patient read-only view scoped to own appointments (FR-P-4, FR-P-5).
 
     AC-09.1: Admin can create appointments; save redirects to changelist (HTTP 302)
     AC-09.2: Admin can edit status, notes, or location and persist changes
     AC-09.3: Admin can delete appointment records
     AC-09.4: Sidebar status filter on the changelist
     AC-09.5: Changelist columns: patient name, doctor name, appt date/time, type, status
+    AC-10.1: Patient sees own upcoming appointments
+    AC-10.2: Patient sees own past appointments
+    AC-10.3: Patient sees zero appointments from other patients
+    AC-10.4: Appointments ordered ascending by appointment_datetime
+    AC-10.5: Detail view shows date, time, doctor full name, location
+    AC-10.6: Patient view is read-only — no Save/Edit
     """
 
     list_display = [
@@ -2193,6 +2234,24 @@ class AppointmentAdmin(admin.ModelAdmin):
         ),
     )
 
+    # Patient-facing fieldset: read-only, shows date/time, doctor, location (AC-10.5)
+    _patient_fieldsets = (
+        (
+            "Your Appointment",
+            {
+                "fields": (
+                    "appointment_datetime",
+                    "appointment_type",
+                    "status",
+                    "get_doctor_full_name",
+                    "location",
+                    "notes",
+                ),
+                "description": "Your appointment details — read-only",
+            },
+        ),
+    )
+
     # ── Display helpers ──────────────────────────────────────────────
 
     def get_patient_name(self, obj):
@@ -2206,13 +2265,48 @@ class AppointmentAdmin(admin.ModelAdmin):
     get_patient_name.admin_order_field = "patient__user_profile__user__last_name"
 
     def get_doctor_name(self, obj):
-        """Display doctor's full name."""
+        """Display doctor's full name (changelist)."""
         if obj.doctor:
             return obj.doctor.user.get_full_name() or obj.doctor.user.username
         return "—"
 
     get_doctor_name.short_description = "Doctor"
     get_doctor_name.admin_order_field = "doctor__user__last_name"
+
+    def get_doctor_full_name(self, obj):
+        """Display doctor's full name in the detail view (AC-10.5)."""
+        if obj and obj.doctor:
+            return obj.doctor.user.get_full_name() or obj.doctor.user.username
+        return "—"
+
+    get_doctor_full_name.short_description = "Doctor"
+
+    # ── Role helper ──────────────────────────────────────────────────
+
+    def _role(self, request):
+        return (
+            getattr(request.user.profile, "role", None)
+            if hasattr(request.user, "profile")
+            else None
+        )
+
+    # ── Queryset ─────────────────────────────────────────────────────
+
+    def get_queryset(self, request):
+        """Scope queryset by role — FR-P-4 / FR-P-5."""
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        if not hasattr(request.user, "profile"):
+            return qs.none()
+        role = request.user.profile.role
+        if role == "admin":
+            return qs
+        if role == "patient":
+            # Ensure the Patient record exists before filtering
+            request.user.profile.ensure_patient_record()
+            return qs.filter(patient__user_profile=request.user.profile)
+        return qs.none()
 
     # ── Permissions ──────────────────────────────────────────────────
 
@@ -2221,7 +2315,22 @@ class AppointmentAdmin(admin.ModelAdmin):
             return True
         if not hasattr(request.user, "profile"):
             return False
-        return request.user.profile.role == "admin"
+        return request.user.profile.role in ["admin", "patient"]
+
+    def has_view_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        role = request.user.profile.role
+        if role == "admin":
+            return True
+        if role == "patient":
+            if obj is None:
+                return True
+            # Object-level: only the patient's own appointments
+            return obj.patient.user_profile == request.user.profile
+        return False
 
     def has_add_permission(self, request):
         if request.user.is_superuser:
@@ -2243,6 +2352,42 @@ class AppointmentAdmin(admin.ModelAdmin):
         if not hasattr(request.user, "profile"):
             return False
         return request.user.profile.role == "admin"
+
+    # ── Role-aware overrides ──────────────────────────────────────────
+
+    def get_list_filter(self, request):
+        """Patients get an upcoming/past time filter; admin gets status filter."""
+        if self._role(request) == "patient":
+            return [AppointmentTimeFilter]
+        return ["status"]
+
+    def get_list_display(self, request):
+        """Patients see a simplified appointment list."""
+        if self._role(request) == "patient":
+            return [
+                "appointment_datetime",
+                "appointment_type",
+                "get_doctor_name",
+                "location",
+                "status",
+            ]
+        return list(self.list_display)
+
+    def get_readonly_fields(self, request, obj=None):
+        """All fields are read-only for patients (AC-10.6)."""
+        if self._role(request) == "patient":
+            # All model field names + the virtual display helper
+            model_fields = [
+                f.name for f in Appointment._meta.get_fields() if hasattr(f, "column")
+            ]
+            return list(set(model_fields + ["get_doctor_full_name"]))
+        return list(self.readonly_fields)
+
+    def get_fieldsets(self, request, obj=None):
+        """Patients see a read-only summary with doctor full name (AC-10.5)."""
+        if self._role(request) == "patient":
+            return self._patient_fieldsets
+        return self.fieldsets
 
     # ── FK filtering ─────────────────────────────────────────────────
 
