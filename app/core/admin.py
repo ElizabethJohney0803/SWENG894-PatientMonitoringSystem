@@ -7,7 +7,14 @@ from django.db import models
 from django.db.models import Q
 from django.http import HttpResponseRedirect
 from django.urls import reverse
-from .models import UserProfile, Patient, EmergencyContact, Medication, TestResult
+from .models import (
+    UserProfile,
+    Patient,
+    EmergencyContact,
+    Medication,
+    TestResult,
+    Appointment,
+)
 from .mixins import PatientAccessMixin, AdminOnlyMixin
 
 
@@ -2124,6 +2131,126 @@ class MedicationAdmin(admin.ModelAdmin):
         ):
             obj.prescribing_doctor = request.user.profile
         super().save_model(request, obj, form, change)
+
+
+# ── Appointment Admin ─────────────────────────────────────────────────────
+
+
+@admin.register(Appointment)
+class AppointmentAdmin(admin.ModelAdmin):
+    """
+    Admin interface for Appointment records — PBI-S3-09.
+
+    AC-09.1: Admin can create appointments; save redirects to changelist (HTTP 302)
+    AC-09.2: Admin can edit status, notes, or location and persist changes
+    AC-09.3: Admin can delete appointment records
+    AC-09.4: Sidebar status filter on the changelist
+    AC-09.5: Changelist columns: patient name, doctor name, appt date/time, type, status
+    """
+
+    list_display = [
+        "get_patient_name",
+        "get_doctor_name",
+        "appointment_datetime",
+        "appointment_type",
+        "status",
+    ]
+    list_filter = ["status"]
+    date_hierarchy = "appointment_datetime"
+    search_fields = [
+        "patient__user_profile__user__first_name",
+        "patient__user_profile__user__last_name",
+        "doctor__user__first_name",
+        "doctor__user__last_name",
+    ]
+    readonly_fields = ["created_at", "updated_at"]
+
+    fieldsets = (
+        (
+            "Appointment Details",
+            {
+                "fields": (
+                    "patient",
+                    "doctor",
+                    "appointment_datetime",
+                    "appointment_type",
+                    "status",
+                ),
+            },
+        ),
+        (
+            "Location & Notes",
+            {
+                "fields": ("location", "notes"),
+            },
+        ),
+        (
+            "System Information",
+            {
+                "fields": ("created_at", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
+    )
+
+    # ── Display helpers ──────────────────────────────────────────────
+
+    def get_patient_name(self, obj):
+        """Display patient's full name."""
+        return (
+            obj.patient.user_profile.user.get_full_name()
+            or obj.patient.user_profile.user.username
+        )
+
+    get_patient_name.short_description = "Patient"
+    get_patient_name.admin_order_field = "patient__user_profile__user__last_name"
+
+    def get_doctor_name(self, obj):
+        """Display doctor's full name."""
+        if obj.doctor:
+            return obj.doctor.user.get_full_name() or obj.doctor.user.username
+        return "—"
+
+    get_doctor_name.short_description = "Doctor"
+    get_doctor_name.admin_order_field = "doctor__user__last_name"
+
+    # ── Permissions ──────────────────────────────────────────────────
+
+    def has_module_permission(self, request):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role == "admin"
+
+    def has_add_permission(self, request):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role == "admin"
+
+    def has_change_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role == "admin"
+
+    def has_delete_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role == "admin"
+
+    # ── FK filtering ─────────────────────────────────────────────────
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        """Restrict doctor FK dropdown to doctor-role users only."""
+        if db_field.name == "doctor":
+            kwargs["queryset"] = UserProfile.objects.filter(role="doctor")
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 
 # Re-register UserAdmin with role-based functionality
