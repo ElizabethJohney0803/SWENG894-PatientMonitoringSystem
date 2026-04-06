@@ -1964,9 +1964,10 @@ class MedicationAdmin(admin.ModelAdmin):
         "start_date",
         "end_date",
         "status",
+        "fulfillment_status",
         "allergy_conflict_warning",
     ]
-    list_filter = ["status", "prescribing_doctor"]
+    list_filter = ["status", "fulfillment_status", "prescribing_doctor"]
     search_fields = [
         "medication_name",
         "patient__medical_id",
@@ -1991,6 +1992,7 @@ class MedicationAdmin(admin.ModelAdmin):
                     "start_date",
                     "end_date",
                     "status",
+                    "fulfillment_status",
                     "notes",
                 )
             },
@@ -2123,6 +2125,7 @@ class MedicationAdmin(admin.ModelAdmin):
                 "start_date",
                 "end_date",
                 "status",
+                "fulfillment_status",
             ]
             return base + all_fields
         return base

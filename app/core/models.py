@@ -597,9 +597,21 @@ class Medication(models.Model):
         default="current",
         help_text="Whether the medication is currently active",
     )
+    FULFILLMENT_STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("dispensed", "Dispensed"),
+        ("cancelled", "Cancelled"),
+    ]
+
     notes = models.TextField(
         blank=True,
         help_text="Additional notes or instructions",
+    )
+    fulfillment_status = models.CharField(
+        max_length=15,
+        choices=FULFILLMENT_STATUS_CHOICES,
+        default="pending",
+        help_text=("Prescription fulfillment lifecycle status — FR-D-5 / FR-Ph-1"),
     )
     allergy_conflict = models.BooleanField(
         default=False,
