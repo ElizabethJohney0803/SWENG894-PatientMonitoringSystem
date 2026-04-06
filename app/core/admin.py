@@ -1964,6 +1964,7 @@ class MedicationAdmin(admin.ModelAdmin):
         "start_date",
         "end_date",
         "status",
+        "allergy_conflict_warning",
     ]
     list_filter = ["status", "prescribing_doctor"]
     search_fields = [
@@ -2027,6 +2028,19 @@ class MedicationAdmin(admin.ModelAdmin):
 
     get_doctor_display.short_description = "Prescribing Doctor"
     get_doctor_display.admin_order_field = "prescribing_doctor__user__last_name"
+
+    def allergy_conflict_warning(self, obj):
+        """Display a warning indicator when allergy_conflict is True (FR-Ph-5 / AC-05.1)."""
+        from django.utils.html import format_html
+
+        if obj.allergy_conflict:
+            return format_html(
+                '<span style="color:red; font-weight:bold;">&#9888; Allergy conflict detected</span>'
+            )
+        return ""
+
+    allergy_conflict_warning.short_description = "Allergy Conflict"
+    allergy_conflict_warning.admin_order_field = "allergy_conflict"
 
     # ── Queryset ─────────────────────────────────────────────────────
 
@@ -2132,6 +2146,17 @@ class MedicationAdmin(admin.ModelAdmin):
         ):
             obj.prescribing_doctor = request.user.profile
         super().save_model(request, obj, form, change)
+
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        """Inject allergy conflict warning into the change-form context (AC-05.1)."""
+        extra_context = extra_context or {}
+        try:
+            obj = self.get_object(request, object_id)
+            if obj is not None and obj.allergy_conflict:
+                extra_context["allergy_conflict_warning"] = True
+        except Exception:
+            pass
+        return super().change_view(request, object_id, form_url, extra_context)
 
 
 # ── Appointment Admin ─────────────────────────────────────────────────────
