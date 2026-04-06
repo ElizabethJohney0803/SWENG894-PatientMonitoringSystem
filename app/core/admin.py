@@ -2346,7 +2346,7 @@ class AppointmentAdmin(admin.ModelAdmin):
     # ── Queryset ─────────────────────────────────────────────────────
 
     def get_queryset(self, request):
-        """Scope queryset by role — FR-P-4 / FR-P-5."""
+        """Scope queryset by role — FR-P-4 / FR-P-5 / FR-N-1."""
         qs = super().get_queryset(request)
         if request.user.is_superuser:
             return qs
@@ -2359,6 +2359,9 @@ class AppointmentAdmin(admin.ModelAdmin):
             # Ensure the Patient record exists before filtering
             request.user.profile.ensure_patient_record()
             return qs.filter(patient__user_profile=request.user.profile)
+        if role == "nurse":
+            # FR-N-1: nurse sees only appointments for their assigned patients
+            return qs.filter(patient__assigned_nurse=request.user.profile)
         return qs.none()
 
     # ── Permissions ──────────────────────────────────────────────────
@@ -2368,7 +2371,7 @@ class AppointmentAdmin(admin.ModelAdmin):
             return True
         if not hasattr(request.user, "profile"):
             return False
-        return request.user.profile.role in ["admin", "patient"]
+        return request.user.profile.role in ["admin", "patient", "nurse"]
 
     def has_view_permission(self, request, obj=None):
         if request.user.is_superuser:
@@ -2383,6 +2386,11 @@ class AppointmentAdmin(admin.ModelAdmin):
                 return True
             # Object-level: only the patient's own appointments
             return obj.patient.user_profile == request.user.profile
+        if role == "nurse":
+            if obj is None:
+                return True
+            # Object-level: only appointments for the nurse's assigned patients
+            return obj.patient.assigned_nurse == request.user.profile
         return False
 
     def has_add_permission(self, request):
@@ -2409,15 +2417,24 @@ class AppointmentAdmin(admin.ModelAdmin):
     # ── Role-aware overrides ──────────────────────────────────────────
 
     def get_list_filter(self, request):
-        """Patients get an upcoming/past time filter; admin gets status filter."""
+        """Patients get an upcoming/past time filter; nurse/admin get status filter."""
         if self._role(request) == "patient":
             return [AppointmentTimeFilter]
         return ["status"]
 
     def get_list_display(self, request):
-        """Patients see a simplified appointment list."""
+        """Patients and nurses see a role-appropriate appointment list."""
         if self._role(request) == "patient":
             return [
+                "appointment_datetime",
+                "appointment_type",
+                "get_doctor_name",
+                "location",
+                "status",
+            ]
+        if self._role(request) == "nurse":
+            return [
+                "get_patient_name",
                 "appointment_datetime",
                 "appointment_type",
                 "get_doctor_name",
@@ -2427,8 +2444,8 @@ class AppointmentAdmin(admin.ModelAdmin):
         return list(self.list_display)
 
     def get_readonly_fields(self, request, obj=None):
-        """All fields are read-only for patients (AC-10.6)."""
-        if self._role(request) == "patient":
+        """All fields are read-only for patients (AC-10.6) and nurses (AC-12.3)."""
+        if self._role(request) in ("patient", "nurse"):
             # All model field names + the virtual display helper
             model_fields = [
                 f.name for f in Appointment._meta.get_fields() if hasattr(f, "column")
@@ -2437,7 +2454,7 @@ class AppointmentAdmin(admin.ModelAdmin):
         return list(self.readonly_fields)
 
     def get_fieldsets(self, request, obj=None):
-        """Patients see a read-only summary with doctor full name (AC-10.5)."""
+        """Patients see a read-only summary; nurses see all details read-only."""
         if self._role(request) == "patient":
             return self._patient_fieldsets
         return self.fieldsets
