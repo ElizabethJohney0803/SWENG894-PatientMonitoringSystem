@@ -137,6 +137,7 @@ class TestPharmacyCanSaveDosageNotes:
             "frequency": med.frequency,
             "start_date": str(med.start_date),
             "status": med.status,
+            "fulfillment_status": med.fulfillment_status,
             "notes": "Dispense with food. Patient confirmed allergies reviewed.",
             # Required for Django admin save
             "_save": "Save",
@@ -220,6 +221,7 @@ class TestDosageNotesPersist:
                 "frequency": med.frequency,
                 "start_date": str(med.start_date),
                 "status": med.status,
+                "fulfillment_status": med.fulfillment_status,
                 "notes": expected_note,
                 "_save": "Save",
             },
