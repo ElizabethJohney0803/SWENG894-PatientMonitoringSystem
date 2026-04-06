@@ -2100,7 +2100,32 @@ class MedicationAdmin(admin.ModelAdmin):
             if obj is None:
                 return True
             return obj.patient.assigned_doctor == request.user.profile
+        if role == "pharmacy":
+            # Pharmacy can edit the notes field only (FR-Ph-2 / AC-02.1)
+            return True
         return False
+
+    def get_readonly_fields(self, request, obj=None):
+        """Pharmacy may only edit the notes field; all other fields are read-only."""
+        base = list(self.readonly_fields)
+        if (
+            not request.user.is_superuser
+            and hasattr(request.user, "profile")
+            and request.user.profile.role == "pharmacy"
+        ):
+            # Every declared field except 'notes' becomes read-only for pharmacy
+            all_fields = [
+                "patient",
+                "medication_name",
+                "dosage",
+                "frequency",
+                "prescribing_doctor",
+                "start_date",
+                "end_date",
+                "status",
+            ]
+            return base + all_fields
+        return base
 
     def has_delete_permission(self, request, obj=None):
         if request.user.is_superuser:
