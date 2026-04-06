@@ -601,6 +601,13 @@ class Medication(models.Model):
         blank=True,
         help_text="Additional notes or instructions",
     )
+    allergy_conflict = models.BooleanField(
+        default=False,
+        help_text=(
+            "Automatically set to True when the medication name matches an entry "
+            "in the patient's recorded allergies — FR-Ph-4"
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -614,6 +621,28 @@ class Medication(models.Model):
             f"{self.medication_name} ({self.dosage}) "
             f"\u2014 {self.get_status_display()}"
         )
+
+    def _check_allergy_conflict(self):
+        """
+        Return True if medication_name matches any entry in the patient's
+        allergies field (case-insensitive).  Returns False for blank/null
+        allergies so no false positives are generated.
+        """
+        allergies_raw = getattr(self.patient, "allergies", "") or ""
+        if not allergies_raw.strip():
+            return False
+        med_name = self.medication_name.lower()
+        for allergy in allergies_raw.split(","):
+            if (
+                allergy.strip().lower() in med_name
+                or med_name in allergy.strip().lower()
+            ):
+                return True
+        return False
+
+    def save(self, *args, **kwargs):
+        self.allergy_conflict = self._check_allergy_conflict()
+        super().save(*args, **kwargs)
 
     def clean(self):
         if self.end_date and self.start_date and self.end_date < self.start_date:
@@ -812,15 +841,11 @@ class Appointment(models.Model):
             raise ValidationError(
                 {"status": f"'{self.status}' is not a valid status choice."}
             )
-        if (
-            self.appointment_type
-            not in self.VALID_APPOINTMENT_TYPES
-        ):
+        if self.appointment_type not in self.VALID_APPOINTMENT_TYPES:
             raise ValidationError(
                 {
                     "appointment_type": (
-                        f"'{self.appointment_type}' is not a valid "
-                        "appointment type."
+                        f"'{self.appointment_type}' is not a valid " "appointment type."
                     )
                 }
             )
