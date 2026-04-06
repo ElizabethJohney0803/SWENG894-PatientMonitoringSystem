@@ -2108,14 +2108,15 @@ class MedicationAdmin(admin.ModelAdmin):
         return False
 
     def get_readonly_fields(self, request, obj=None):
-        """Pharmacy may only edit the notes field; all other fields are read-only."""
+        """Pharmacy may edit notes and fulfillment_status only; all clinical fields are read-only."""
         base = list(self.readonly_fields)
         if (
             not request.user.is_superuser
             and hasattr(request.user, "profile")
             and request.user.profile.role == "pharmacy"
         ):
-            # Every declared field except 'notes' becomes read-only for pharmacy
+            # Clinical prescription fields are read-only for pharmacy.
+            # Writable:  notes (PBI-S3-02), fulfillment_status (PBI-S3-07)
             all_fields = [
                 "patient",
                 "medication_name",
@@ -2125,7 +2126,6 @@ class MedicationAdmin(admin.ModelAdmin):
                 "start_date",
                 "end_date",
                 "status",
-                "fulfillment_status",
             ]
             return base + all_fields
         return base
