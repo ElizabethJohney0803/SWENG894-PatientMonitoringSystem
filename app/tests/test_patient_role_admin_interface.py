@@ -117,26 +117,33 @@ class TestPatientAdminListDisplay:
 
     # ── nurse ──
 
-    def test_nurse_sees_assignment_and_contact_columns(self, nurse_user):
+    def test_nurse_sees_sprint4_columns(self, nurse_user):
+        """Sprint 4 AC-01.2: nurse list shows name, DOB, blood type, assigned doctor, chronic conditions."""
         cols = self.admin.get_list_display(_request(self.factory, nurse_user))
         for col in [
-            "medical_id",
             "get_patient_name",
+            "date_of_birth",
+            "blood_type",
             "get_assigned_doctor",
-            "age",
-            "gender",
-            "phone_primary",
+            "get_chronic_conditions_short",
         ]:
-            assert col in cols, f"Nurse list display should include '{col}'"
+            assert (
+                col in cols
+            ), f"Sprint 4 AC-01.2: Nurse list display should include '{col}'"
 
     # ── pharmacy ──
 
-    def test_pharmacy_sees_same_columns_as_nurse(self, pharmacy_user, nurse_user):
+    def test_pharmacy_and_nurse_have_different_columns(self, pharmacy_user, nurse_user):
+        """Sprint 4: nurse columns changed; pharmacy retains its own column set."""
         nurse_cols = self.admin.get_list_display(_request(self.factory, nurse_user))
         pharmacy_cols = self.admin.get_list_display(
             _request(self.factory, pharmacy_user)
         )
-        assert nurse_cols == pharmacy_cols
+        # Sprint 4 nurse columns: name, DOB, blood_type, assigned_doctor, chronic_conditions
+        assert "date_of_birth" in nurse_cols
+        assert "get_chronic_conditions_short" in nurse_cols
+        # Pharmacy retains its own columns (includes medical_id, phone, city)
+        assert "medical_id" in pharmacy_cols
 
     # ── patient ──
 
@@ -321,13 +328,16 @@ class TestPatientAdminReadonlyFields:
         for f in locked:
             assert f in readonly, f"Nurse should have '{f}' as readonly"
 
-    def test_nurse_can_edit_contact_and_address_fields(self, nurse_user, patient_user):
-        """Nurses must be able to update contact details and address."""
+    def test_nurse_cannot_edit_contact_and_address_fields(
+        self, nurse_user, patient_user
+    ):
+        """Sprint 4 AC-01.4: All patient fields are read-only for nurses."""
         patient = patient_user.profile.patient_record
         readonly = self.admin.get_readonly_fields(
             _request(self.factory, nurse_user), patient
         )
-        editable = [
+        # Contact and address fields must now also be locked for nurses (AC-01.4)
+        locked = [
             "phone_primary",
             "phone_secondary",
             "email_personal",
@@ -338,8 +348,10 @@ class TestPatientAdminReadonlyFields:
             "postal_code",
             "country",
         ]
-        for f in editable:
-            assert f not in readonly, f"Nurse should be able to edit '{f}'"
+        for f in locked:
+            assert (
+                f in readonly
+            ), f"Sprint 4 AC-01.4: Nurse should have '{f}' as readonly"
 
     # ── pharmacy ──
 
