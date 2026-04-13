@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from django.contrib.auth.models import User
+from django.contrib.auth.models import User, Group
 from django.contrib.auth.forms import UserCreationForm
 from django import forms
 from django.db import models
@@ -327,7 +327,7 @@ class UserProfileAdmin(PatientAccessMixin, admin.ModelAdmin):
     """Admin interface for user profiles with role-based filtering."""
 
     def has_module_permission(self, request):
-        """Hide UserProfile admin from patients - they should use Patient admin instead."""
+        """Hide UserProfile admin from patients and nurses (AC-04.2)."""
         # Always allow superusers
         if request.user.is_superuser:
             return True
@@ -342,9 +342,21 @@ class UserProfileAdmin(PatientAccessMixin, admin.ModelAdmin):
         if user_role == "patient":
             return False
 
-        # Allow admin and medical staff to access UserProfile admin
-        allowed_roles = ["admin", "doctor", "nurse", "pharmacy"]
+        # Nurses should not access UserProfile admin (AC-04.2)
+        if user_role == "nurse":
+            return False
+
+        # Allow admin, doctor, and pharmacy to access UserProfile admin
+        allowed_roles = ["admin", "doctor", "pharmacy"]
         return user_role in allowed_roles
+
+    def has_view_permission(self, request, obj=None):
+        """Deny nurse access to UserProfiles (AC-04.2)."""
+        if not hasattr(request.user, "profile"):
+            return super().has_view_permission(request, obj)
+        if request.user.profile.role == "nurse":
+            return False
+        return super().has_view_permission(request, obj)
 
     def get_queryset(self, request):
         """Filter profiles based on role permissions."""
@@ -567,11 +579,16 @@ class EmergencyContactInline(admin.StackedInline):
     ]
 
     def get_readonly_fields(self, request, obj=None):
-        """Make fields readonly for patients viewing their own records."""
-        if hasattr(request.user, "profile") and request.user.profile.role == "patient":
-            if obj and obj.user_profile != request.user.profile:
-                # Patient trying to view another patient's data
+        """Read-only for nurses (AC-01.4) and patients viewing others' records."""
+        if hasattr(request.user, "profile"):
+            role = request.user.profile.role
+            # Nurses have read-only access to emergency contacts (AC-03.1)
+            if role == "nurse":
                 return list(self.fields)
+            if role == "patient":
+                if obj and obj.user_profile != request.user.profile:
+                    # Patient trying to view another patient's data
+                    return list(self.fields)
         return []
 
 
@@ -840,6 +857,16 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
     get_assigned_nurse.short_description = "Assigned Nurse"
     get_assigned_nurse.admin_order_field = "assigned_nurse__user__last_name"
 
+    def get_chronic_conditions_short(self, obj):
+        """Truncated chronic conditions for nurse list display (AC-01.2)."""
+        if obj.chronic_conditions:
+            text = obj.chronic_conditions
+            return text[:80] + ("\u2026" if len(text) > 80 else "")
+        return "\u2014"
+
+    get_chronic_conditions_short.short_description = "Chronic Conditions"
+    get_chronic_conditions_short.admin_order_field = "chronic_conditions"
+
     def age(self, obj):
         """Display patient's age."""
         return obj.age
@@ -871,16 +898,13 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
             ]
 
         if user_role == "nurse":
-            # Nurses focus on their assigned patients
+            # AC-01.2: nurses see name, DOB, blood type, assigned doctor, chronic conditions
             return [
-                "medical_id",
                 "get_patient_name",
+                "date_of_birth",
+                "blood_type",
                 "get_assigned_doctor",
-                "get_assigned_nurse",
-                "age",
-                "gender",
-                "phone_primary",
-                "city",
+                "get_chronic_conditions_short",
             ]
 
         if user_role == "pharmacy":
@@ -1034,8 +1058,7 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
             )
 
         elif user_role in ["nurse", "pharmacy"]:
-            # Nurses/pharmacy can only update contact & address info;
-            # all clinical/identity fields are readonly
+            # All fields readonly for nurse (AC-01.4); clinical fields readonly for pharmacy
             readonly_fields.extend(
                 [
                     "user_profile",
@@ -1045,6 +1068,17 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
                     "gender",
                     "blood_type",
                     "insurance_number",
+                    # Contact information — readonly for nurse (AC-01.4)
+                    "phone_primary",
+                    "phone_secondary",
+                    "email_personal",
+                    # Address — readonly for nurse
+                    "address_line1",
+                    "address_line2",
+                    "city",
+                    "state",
+                    "postal_code",
+                    "country",
                     # Medical History — always readonly for nurse/pharmacy
                     "diagnoses",
                     "procedures",
@@ -1416,8 +1450,14 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
         user_role = request.user.profile.role
 
         # Allow admin and medical staff full access
-        if user_role in ["admin", "doctor", "nurse", "pharmacy"]:
+        if user_role in ["admin", "doctor", "pharmacy"]:
             return True
+
+        # Nurse: object-level check — only view assigned patients (AC-01.3)
+        if user_role == "nurse":
+            if obj is None:  # Changelist view is allowed
+                return True
+            return obj.assigned_nurse == request.user.profile
 
         # Allow patients to view their own records
         if user_role == "patient":
@@ -1525,12 +1565,71 @@ class EmergencyContactAdmin(admin.ModelAdmin):
         elif user_role == "patient":
             # Patients can only see their own emergency contacts
             return qs.filter(patient__user_profile=request.user.profile)
-        elif user_role in ["doctor", "nurse", "pharmacy"]:
-            # Medical staff can see all emergency contacts
+        elif user_role == "nurse":
+            # Task 4 (AC-03.1): nurses see only contacts for their assigned patients
+            return qs.filter(patient__assigned_nurse=request.user.profile)
+        elif user_role in ["doctor", "pharmacy"]:
+            # Doctors and pharmacy can see all emergency contacts
             return qs
         else:
             # Other roles see nothing
             return qs.none()
+
+    def has_module_permission(self, request):
+        """Allow nurses and other medical staff to access emergency contacts."""
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role in [
+            "admin",
+            "doctor",
+            "nurse",
+            "pharmacy",
+            "patient",
+        ]
+
+    def has_view_permission(self, request, obj=None):
+        """Object-level read access; nurses restricted to assigned patients (AC-03.1)."""
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        role = request.user.profile.role
+        if role == "admin":
+            return True
+        if role in ["doctor", "pharmacy"]:
+            return True
+        if role == "nurse":
+            if obj is None:
+                return True
+            return obj.patient.assigned_nurse == request.user.profile
+        if role == "patient":
+            if obj is None:
+                return True
+            return obj.patient.user_profile == request.user.profile
+        return False
+
+    def has_add_permission(self, request):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role in ["admin", "doctor"]
+
+    def has_change_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role in ["admin", "doctor"]
+
+    def has_delete_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role == "admin"
 
 
 class TestResultAdminForm(forms.ModelForm):
@@ -2044,6 +2143,35 @@ class MedicationAdmin(admin.ModelAdmin):
     allergy_conflict_warning.short_description = "Allergy Conflict"
     allergy_conflict_warning.admin_order_field = "allergy_conflict"
 
+    # ── Role-aware list overrides ─────────────────────────────────────
+
+    def _med_role(self, request):
+        return (
+            getattr(request.user.profile, "role", None)
+            if hasattr(request.user, "profile")
+            else None
+        )
+
+    def get_list_display(self, request):
+        """Nurse sees a focused medication list with allergy indicator (AC-02.2)."""
+        if self._med_role(request) == "nurse":
+            return [
+                "get_patient_display",
+                "medication_name",
+                "dosage",
+                "frequency",
+                "start_date",
+                "status",
+                "allergy_conflict_warning",
+            ]
+        return list(self.list_display)
+
+    def get_list_filter(self, request):
+        """Nurse gets simplified filters (AC-02.2)."""
+        if self._med_role(request) == "nurse":
+            return ["status", "allergy_conflict"]
+        return list(self.list_filter)
+
     # ── Queryset ─────────────────────────────────────────────────────
 
     def get_queryset(self, request):
@@ -2108,26 +2236,38 @@ class MedicationAdmin(admin.ModelAdmin):
         return False
 
     def get_readonly_fields(self, request, obj=None):
-        """Pharmacy may edit notes and fulfillment_status only; all clinical fields are read-only."""
+        """Nurse: all fields read-only (AC-02.4); Pharmacy: clinical fields read-only."""
         base = list(self.readonly_fields)
-        if (
-            not request.user.is_superuser
-            and hasattr(request.user, "profile")
-            and request.user.profile.role == "pharmacy"
-        ):
-            # Clinical prescription fields are read-only for pharmacy.
-            # Writable:  notes (PBI-S3-02), fulfillment_status (PBI-S3-07)
-            all_fields = [
-                "patient",
-                "medication_name",
-                "dosage",
-                "frequency",
-                "prescribing_doctor",
-                "start_date",
-                "end_date",
-                "status",
-            ]
-            return base + all_fields
+        if not request.user.is_superuser and hasattr(request.user, "profile"):
+            role = request.user.profile.role
+            if role == "pharmacy":
+                # Clinical prescription fields are read-only for pharmacy.
+                # Writable:  notes (PBI-S3-02), fulfillment_status (PBI-S3-07)
+                return base + [
+                    "patient",
+                    "medication_name",
+                    "dosage",
+                    "frequency",
+                    "prescribing_doctor",
+                    "start_date",
+                    "end_date",
+                    "status",
+                ]
+            if role == "nurse":
+                # All fields read-only for nurse (AC-02.4)
+                return base + [
+                    "patient",
+                    "medication_name",
+                    "dosage",
+                    "frequency",
+                    "prescribing_doctor",
+                    "start_date",
+                    "end_date",
+                    "status",
+                    "fulfillment_status",
+                    "notes",
+                    "allergy_conflict",
+                ]
         return base
 
     def has_delete_permission(self, request, obj=None):
@@ -2467,6 +2607,55 @@ class AppointmentAdmin(admin.ModelAdmin):
             kwargs["queryset"] = UserProfile.objects.filter(role="doctor")
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
+
+# ── Custom AdminSite: role-based navigation filtering (Task 2) ───────────────
+
+
+class CustomAdminSite(admin.AdminSite):
+    """Admin site subclass that filters navigation for nurses (AC-04.1)."""
+
+    def get_app_list(self, request, app_label=None):
+        """Restrict nurse navigation to patient-care sections only (AC-04.1)."""
+        app_list = super().get_app_list(request, app_label=app_label)
+        if not (
+            hasattr(request.user, "profile") and request.user.profile.role == "nurse"
+        ):
+            return app_list
+        # Nurses see only these four models in navigation
+        nurse_allowed = {"Patient", "Medication", "Appointment", "TestResult"}
+        filtered = []
+        for app in app_list:
+            models = [m for m in app["models"] if m["object_name"] in nurse_allowed]
+            if models:
+                filtered.append({**app, "models": models})
+        return filtered
+
+
+# Swap admin site class — preserves all existing registrations
+admin.site.__class__ = CustomAdminSite
+
+# ── Restrict Group admin to admins only (AC-04.2) ────────────────────────────
+
+from django.contrib.auth.admin import GroupAdmin as BaseGroupAdmin  # noqa: E402
+
+try:
+    admin.site.unregister(Group)
+except admin.sites.NotRegistered:
+    pass
+
+
+class CustomGroupAdmin(AdminOnlyMixin, BaseGroupAdmin):
+    """Groups section limited to admin role only (AC-04.2)."""
+
+    def has_module_permission(self, request):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role == "admin"
+
+
+admin.site.register(Group, CustomGroupAdmin)
 
 # Re-register UserAdmin with role-based functionality
 admin.site.unregister(User)
