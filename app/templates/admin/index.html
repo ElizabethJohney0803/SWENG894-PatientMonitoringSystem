@@ -23,7 +23,7 @@
                 <a href="{% url 'admin:core_patient_changelist' %}" 
                    style="background: #4caf50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">
                     <span style="margin-right: 8px;">✏️</span>
-                    View & Edit My Information
+                    View &amp; Edit My Information
                 </a>
             </div>
             
@@ -41,6 +41,59 @@
             </div>
         </div>
     {% endif %}
+
+    {% if stats %}
+    {# Admin dashboard statistics panel — AC-12.1 / AC-12.2 #}
+    <div style="background:#f0f4ff;border:1px solid #c5cae9;border-radius:6px;padding:20px;margin-bottom:20px;">
+        <h2 style="margin-top:0;color:#1a237e;">System Statistics</h2>
+        <div style="display:flex;gap:20px;flex-wrap:wrap;">
+            <div style="background:white;border-radius:6px;padding:16px 24px;min-width:130px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.12);">
+                <div style="font-size:2em;font-weight:bold;color:#1565c0;">{{ stats.total_patients }}</div>
+                <div style="color:#555;">Patients</div>
+            </div>
+            <div style="background:white;border-radius:6px;padding:16px 24px;min-width:130px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.12);">
+                <div style="font-size:2em;font-weight:bold;color:#2e7d32;">{{ stats.total_doctors }}</div>
+                <div style="color:#555;">Doctors</div>
+            </div>
+            <div style="background:white;border-radius:6px;padding:16px 24px;min-width:130px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.12);">
+                <div style="font-size:2em;font-weight:bold;color:#6a1b9a;">{{ stats.total_nurses }}</div>
+                <div style="color:#555;">Nurses</div>
+            </div>
+            <div style="background:white;border-radius:6px;padding:16px 24px;min-width:130px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.12);">
+                <div style="font-size:2em;font-weight:bold;color:#e65100;">{{ stats.total_pharmacy }}</div>
+                <div style="color:#555;">Pharmacy</div>
+            </div>
+            <div style="background:white;border-radius:6px;padding:16px 24px;min-width:130px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.12);">
+                <div style="font-size:2em;font-weight:bold;color:#c62828;">{{ stats.pending_orders }}</div>
+                <div style="color:#555;">Pending Orders</div>
+            </div>
+        </div>
+
+        {% if recent_audit_logs %}
+        <h3 style="margin-top:20px;color:#1a237e;">Recent Audit Activity</h3>
+        <table style="width:100%;border-collapse:collapse;background:white;border-radius:4px;overflow:hidden;">
+            <thead>
+                <tr style="background:#e8eaf6;">
+                    <th style="padding:8px 12px;text-align:left;">Timestamp</th>
+                    <th style="padding:8px 12px;text-align:left;">User</th>
+                    <th style="padding:8px 12px;text-align:left;">Action</th>
+                    <th style="padding:8px 12px;text-align:left;">Model</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in recent_audit_logs %}
+                <tr style="border-top:1px solid #e0e0e0;">
+                    <td style="padding:8px 12px;font-size:0.9em;">{{ log.timestamp|date:"Y-m-d H:i" }}</td>
+                    <td style="padding:8px 12px;">{{ log.user|default:"—" }}</td>
+                    <td style="padding:8px 12px;text-transform:uppercase;font-weight:bold;font-size:0.85em;">{{ log.action }}</td>
+                    <td style="padding:8px 12px;">{{ log.model_name }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+    {% endif %}
     
     {{ block.super }}
 {% endblock %}
@@ -48,6 +101,36 @@
 {% block extrahead %}
     {{ block.super }}
     {% if user.profile.role == "patient" %}
+        <style>
+            /* Hide sections that patients don't need */
+            .module h2 a[href*="userprofile"] {
+                display: none;
+            }
+            
+            /* Highlight patient-relevant sections */
+            .module h2 a[href*="patient"] {
+                background: #e8f5e8 !important;
+                color: #2e7d32 !important;
+                padding: 5px 10px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+        </style>
+        
+        <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                fetch('{% url "admin:core_patient_changelist" %}', {
+                    method: 'GET',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                    }
+                }).catch(function(error) {
+                    console.log('Patient record check completed');
+                });
+            });
+        </script>
+    {% endif %}
+{% endblock %}
         <style>
             /* Hide sections that patients don't need */
             .module h2 a[href*="userprofile"] {
