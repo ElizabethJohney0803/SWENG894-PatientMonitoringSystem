@@ -23,7 +23,7 @@
                 <a href="{% url 'admin:core_patient_changelist' %}" 
                    style="background: #4caf50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">
                     <span style="margin-right: 8px;">✏️</span>
-                    View & Edit My Information
+                    View &amp; Edit My Information
                 </a>
             </div>
             
@@ -48,6 +48,36 @@
 {% block extrahead %}
     {{ block.super }}
     {% if user.profile.role == "patient" %}
+        <style>
+            /* Hide sections that patients don't need */
+            .module h2 a[href*="userprofile"] {
+                display: none;
+            }
+            
+            /* Highlight patient-relevant sections */
+            .module h2 a[href*="patient"] {
+                background: #e8f5e8 !important;
+                color: #2e7d32 !important;
+                padding: 5px 10px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+        </style>
+        
+        <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                fetch('{% url "admin:core_patient_changelist" %}', {
+                    method: 'GET',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                    }
+                }).catch(function(error) {
+                    console.log('Patient record check completed');
+                });
+            });
+        </script>
+    {% endif %}
+{% endblock %}
         <style>
             /* Hide sections that patients don't need */
             .module h2 a[href*="userprofile"] {
