@@ -1,17 +1,13 @@
-import json
-
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User, Group
 from django.contrib.auth.forms import UserCreationForm
 from django import forms
-from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q, Count, Min
-from django.http import HttpResponseForbidden, HttpResponseRedirect
+from django.db.models import Q
+from django.http import HttpResponseRedirect
 from django.urls import reverse
 from django.utils import timezone
-from django.utils.html import format_html
 from .models import (
     UserProfile,
     Patient,
@@ -19,53 +15,8 @@ from .models import (
     Medication,
     TestResult,
     Appointment,
-    AuditLog,
 )
 from .mixins import PatientAccessMixin, AdminOnlyMixin
-
-
-# ---------------------------------------------------------------------------
-# Audit-logging helper
-# ---------------------------------------------------------------------------
-
-
-def _write_audit_log(request, action, obj, changes_summary=""):
-    """
-    Create an immutable AuditLog entry.  Silently swallows exceptions so
-    that a logging failure never breaks a real request.
-    """
-    try:
-        ip = request.META.get("REMOTE_ADDR")
-        AuditLog.objects.create(
-            user=request.user if request.user.is_authenticated else None,
-            action=action,
-            model_name=obj.__class__.__name__,
-            object_id=str(obj.pk) if obj.pk else "",
-            object_repr=str(obj)[:500],
-            ip_address=ip,
-            changes_summary=changes_summary,
-        )
-    except Exception:
-        pass
-
-
-def _build_changes_summary(old_data: dict, new_data: dict) -> str:
-    """Return a JSON string describing changed fields: {field: [old, new], ...}."""
-    diff = {
-        field: [old_val, new_data.get(field)]
-        for field, old_val in old_data.items()
-        if old_val != new_data.get(field)
-    }
-    return json.dumps(diff) if diff else ""
-
-
-def _snapshot(obj) -> dict:
-    """Capture a field-value snapshot of a model instance."""
-    return {
-        f.name: str(getattr(obj, f.name, ""))
-        for f in obj._meta.concrete_fields
-        if f.name not in ("created_at", "updated_at")
-    }
 
 
 class CityListFilter(admin.SimpleListFilter):
@@ -283,18 +234,6 @@ class UserAdmin(AdminOnlyMixin, BaseUserAdmin):
     inlines = (UserProfileInline,)
     add_form = CustomUserCreationForm
 
-    # AC-09.1: list display for admin user management
-    list_display = [
-        "username",
-        "email",
-        "get_role",
-        "get_department",
-        "is_active",
-        "date_joined",
-    ]
-    list_filter = ["is_active", "profile__role", "date_joined"]
-    actions = ["deactivate_user"]
-
     # Simplified add_fieldsets - only User model fields
     add_fieldsets = (
         (
@@ -321,34 +260,17 @@ class UserAdmin(AdminOnlyMixin, BaseUserAdmin):
         ),
     )
 
-    def get_role(self, obj):
-        if hasattr(obj, "profile"):
-            return obj.profile.get_role_display()
-        return "—"
-
-    get_role.short_description = "Role"
-    get_role.admin_order_field = "profile__role"
-
-    def get_department(self, obj):
-        if hasattr(obj, "profile"):
-            return obj.profile.department or "—"
-        return "—"
-
-    get_department.short_description = "Department"
-
-    def deactivate_user(self, request, queryset):
-        """Admin action: set is_active=False for selected users (AC-09.3)."""
-        count = queryset.update(is_active=False)
-        self.message_user(request, f"{count} user(s) deactivated.")
-
-    deactivate_user.short_description = "Deactivate selected users"
-
     def has_module_permission(self, request):
         """Allow admin users and superusers to access user management module."""
+        # Always allow superusers
         if request.user.is_superuser:
             return True
+
+        # Allow users with admin role
         if hasattr(request.user, "profile") and request.user.profile.role == "admin":
             return True
+
+        # Fall back to default Django permission check
         return super().has_module_permission(request)
 
     def get_form(self, request, obj=None, **kwargs):
@@ -373,20 +295,15 @@ class UserAdmin(AdminOnlyMixin, BaseUserAdmin):
         return super().get_inline_instances(request, obj)
 
     def save_model(self, request, obj, form, change):
-        """Atomic role-to-group reassignment on save (AC-09.4)."""
+        """Override save_model to handle profile creation properly."""
         super().save_model(request, obj, form, change)
 
-        # Ensure profile exists
-        if not hasattr(obj, "profile"):
-            UserProfile.objects.get_or_create(user=obj, defaults={"role": "patient"})
-            return
-
-        # Trigger group re-assignment (handles role changes atomically)
-        profile = obj.profile
-        profile.assign_to_group()
-
-        # For new users created without the custom add form
+        # For new users, the form's save method should have already created the profile
+        # Ensure the profile exists and has the correct data
         if not change and not hasattr(obj, "profile"):
+            # This shouldn't happen, but just in case
+            from core.models import UserProfile
+
             UserProfile.objects.get_or_create(user=obj, defaults={"role": "patient"})
 
     def get_queryset(self, request):
@@ -643,18 +560,6 @@ class UserProfileAdmin(PatientAccessMixin, admin.ModelAdmin):
 
     is_complete.boolean = True
     is_complete.short_description = "Profile Complete"
-
-    actions = ["sync_user_groups"]
-
-    def sync_user_groups(self, request, queryset):
-        """Sync every UserProfile to the Group matching its role field (AC-11.3)."""
-        count = 0
-        for profile in queryset:
-            profile.assign_to_group()
-            count += 1
-        self.message_user(request, f"Synced {count} user profile(s) to correct groups.")
-
-    sync_user_groups.short_description = "Sync user groups to match role"
 
 
 class EmergencyContactInline(admin.StackedInline):
@@ -962,36 +867,6 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
     get_chronic_conditions_short.short_description = "Chronic Conditions"
     get_chronic_conditions_short.admin_order_field = "chronic_conditions"
 
-    def get_diagnoses_short(self, obj):
-        """Truncated diagnosis summary for doctor list display (AC-05.2)."""
-        if obj.diagnoses:
-            text = obj.diagnoses
-            return text[:60] + ("\u2026" if len(text) > 60 else "")
-        return "\u2014"
-
-    get_diagnoses_short.short_description = "Diagnosis Summary"
-
-    def get_pending_test_count(self, obj):
-        """Count of pending test results for this patient (AC-05.2)."""
-        return obj.test_results.filter(status="pending").count()
-
-    get_pending_test_count.short_description = "Pending Tests"
-
-    def get_next_appointment(self, obj):
-        """Next upcoming appointment date for this patient (AC-05.2)."""
-        now = timezone.now()
-        appt = (
-            obj.appointments.filter(appointment_datetime__gte=now)
-            .exclude(status__in=["completed", "cancelled"])
-            .order_by("appointment_datetime")
-            .first()
-        )
-        if appt:
-            return appt.appointment_datetime.strftime("%Y-%m-%d %H:%M")
-        return "\u2014"
-
-    get_next_appointment.short_description = "Next Appointment"
-
     def age(self, obj):
         """Display patient's age."""
         return obj.age
@@ -1011,14 +886,15 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
             return ["medical_id", "get_patient_name", "age", "gender", "phone_primary"]
 
         if user_role == "doctor":
-            # AC-05.2: name, medical ID, DOB, diagnosis summary, pending tests, next appt
+            # Doctors need clinical details about their assigned patients
             return [
                 "medical_id",
                 "get_patient_name",
-                "date_of_birth",
-                "get_diagnoses_short",
-                "get_pending_test_count",
-                "get_next_appointment",
+                "age",
+                "gender",
+                "blood_type",
+                "phone_primary",
+                "city",
             ]
 
         if user_role == "nurse":
@@ -1618,22 +1494,17 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
                 "Welcome! Below you can view and update your patient information. "
                 "Please make sure all your details are accurate and up-to-date."
             )
+
+            # Auto-create Patient record if it doesn't exist
             request.user.profile.ensure_patient_record()
 
         return super().changelist_view(request, extra_context)
 
     def change_view(self, request, object_id, form_url="", extra_context=None):
-        """Override change view: audit log read + helpful context for patients (AC-14.1)."""
+        """Override change view to provide helpful context for patients."""
         extra_context = extra_context or {}
 
-        # Write audit log READ entry (AC-14.1)
-        try:
-            obj = self.get_object(request, object_id)
-            if obj is not None:
-                _write_audit_log(request, "read", obj)
-        except Exception:
-            pass
-
+        # Add helpful message for patient users
         if hasattr(request.user, "profile") and request.user.profile.role == "patient":
             extra_context["patient_help_message"] = (
                 "Please update your information below. Fields marked with placeholder text "
@@ -1641,29 +1512,6 @@ class PatientAdmin(PatientAccessMixin, admin.ModelAdmin):
             )
 
         return super().change_view(request, object_id, form_url, extra_context)
-
-    def save_model(self, request, obj, form, change):
-        """Audit-log create/update events (AC-15.1 / AC-15.2)."""
-        if change and obj.pk:
-            # Capture old values before save
-            try:
-                old_obj = self.model.objects.get(pk=obj.pk)
-                old_data = _snapshot(old_obj)
-            except self.model.DoesNotExist:
-                old_data = {}
-            super().save_model(request, obj, form, change)
-            new_data = _snapshot(obj)
-            _write_audit_log(
-                request, "update", obj, _build_changes_summary(old_data, new_data)
-            )
-        else:
-            super().save_model(request, obj, form, change)
-            _write_audit_log(request, "create", obj)
-
-    def delete_model(self, request, obj):
-        """Audit-log delete events (AC-15.3)."""
-        _write_audit_log(request, "delete", obj)
-        super().delete_model(request, obj)
 
 
 @admin.register(EmergencyContact)
@@ -1911,15 +1759,6 @@ class TestResultAdmin(admin.ModelAdmin):
     get_result_display.short_description = "Result"
     get_result_display.admin_order_field = "result_value"
 
-    def critical_status_badge(self, obj):
-        """Render a bold red badge for critical-status rows (AC-06.3)."""
-        if obj.status == "critical":
-            return format_html('<strong style="color:red;">&#9888; CRITICAL</strong>')
-        return obj.get_status_display()
-
-    critical_status_badge.short_description = "Status"
-    critical_status_badge.admin_order_field = "status"
-
     # ── role helper ───────────────────────────────────────────────────
 
     def _user_role(self, request):
@@ -1941,18 +1780,17 @@ class TestResultAdmin(admin.ModelAdmin):
                 "test_name",
                 "get_result_display",
                 "reference_range",
-                "critical_status_badge",
+                "status",
                 "doctor_notes",
             ]
         if role == "doctor":
-            # AC-06.3: show critical badge + ordering by test_date desc
             return [
                 "test_date",
                 "test_name",
                 "get_patient_display",
                 "get_result_display",
                 "reference_range",
-                "critical_status_badge",
+                "status",
                 "follow_up_required",
             ]
         if role == "nurse":
@@ -2199,42 +2037,14 @@ class TestResultAdmin(admin.ModelAdmin):
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
     def save_model(self, request, obj, form, change):
-        """Auto-assign ordering_doctor; audit-log create/update (AC-06.4, AC-15.1/15.2)."""
+        """Auto-assign ordering_doctor when a doctor saves a new result."""
         if (
             not obj.ordering_doctor
             and hasattr(request.user, "profile")
             and request.user.profile.role == "doctor"
         ):
             obj.ordering_doctor = request.user.profile
-        if change and obj.pk:
-            try:
-                old_obj = self.model.objects.get(pk=obj.pk)
-                old_data = _snapshot(old_obj)
-            except self.model.DoesNotExist:
-                old_data = {}
-            super().save_model(request, obj, form, change)
-            _write_audit_log(
-                request, "update", obj, _build_changes_summary(old_data, _snapshot(obj))
-            )
-        else:
-            super().save_model(request, obj, form, change)
-            _write_audit_log(request, "create", obj)
-
-    def delete_model(self, request, obj):
-        """Audit-log delete (AC-15.3)."""
-        _write_audit_log(request, "delete", obj)
-        super().delete_model(request, obj)
-
-    def change_view(self, request, object_id, form_url="", extra_context=None):
-        """Audit-log read (AC-14.2)."""
-        extra_context = extra_context or {}
-        try:
-            obj = self.get_object(request, object_id)
-            if obj is not None:
-                _write_audit_log(request, "read", obj)
-        except Exception:
-            pass
-        return super().change_view(request, object_id, form_url, extra_context)
+        super().save_model(request, obj, form, change)
 
 
 # ── Medication Admin ──────────────────────────────────────────────────────
@@ -2322,6 +2132,8 @@ class MedicationAdmin(admin.ModelAdmin):
 
     def allergy_conflict_warning(self, obj):
         """Display a warning indicator when allergy_conflict is True (FR-Ph-5 / AC-05.1)."""
+        from django.utils.html import format_html
+
         if obj.allergy_conflict:
             return format_html(
                 '<span style="color:red; font-weight:bold;">&#9888; Allergy conflict detected</span>'
@@ -2494,66 +2306,22 @@ class MedicationAdmin(admin.ModelAdmin):
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
     def save_model(self, request, obj, form, change):
-        """Auto-assign prescribing_doctor + audit-log create/update."""
+        """Auto-assign prescribing_doctor when a doctor saves."""
         if (
             not obj.prescribing_doctor
             and hasattr(request.user, "profile")
             and request.user.profile.role == "doctor"
         ):
             obj.prescribing_doctor = request.user.profile
-        if change and obj.pk:
-            try:
-                old_obj = self.model.objects.get(pk=obj.pk)
-                old_data = _snapshot(old_obj)
-            except self.model.DoesNotExist:
-                old_data = {}
-            super().save_model(request, obj, form, change)
-            _write_audit_log(
-                request, "update", obj, _build_changes_summary(old_data, _snapshot(obj))
-            )
-        else:
-            super().save_model(request, obj, form, change)
-            _write_audit_log(request, "create", obj)
-
-    def delete_model(self, request, obj):
-        """Audit-log delete."""
-        _write_audit_log(request, "delete", obj)
-        super().delete_model(request, obj)
+        super().save_model(request, obj, form, change)
 
     def change_view(self, request, object_id, form_url="", extra_context=None):
-        """Inject risk banner + audit log read entry (AC-05.1, AC-14.2, AC-17.6, AC-17.7)."""
+        """Inject allergy conflict warning into the change-form context (AC-05.1)."""
         extra_context = extra_context or {}
         try:
             obj = self.get_object(request, object_id)
-            if obj is not None:
-                # Audit log read
-                _write_audit_log(request, "read", obj)
-                # Legacy boolean flag
-                if obj.allergy_conflict:
-                    extra_context["allergy_conflict_warning"] = True
-                # Structured risk banner (AC-17.6 pharmacy / AC-17.7 doctor)
-                if obj.risk_level != "safe":
-                    from core.services.drug_allergy_engine import (
-                        DrugAllergyRiskEngine,
-                        _tokenise_allergies,
-                    )
-
-                    engine = DrugAllergyRiskEngine()
-                    allergies_raw = getattr(obj.patient, "allergies", "") or ""
-                    result = engine.evaluate(obj.medication_name, allergies_raw)
-                    extra_context["risk_banner"] = {
-                        "level": obj.risk_level.upper(),
-                        "score": obj.risk_score,
-                        "allergen": result.matched_allergen or "",
-                        "strategy": result.strategy or "",
-                    }
-                    role = (
-                        request.user.profile.role
-                        if hasattr(request.user, "profile")
-                        else None
-                    )
-                    extra_context["show_risk_banner"] = True
-                    extra_context["is_doctor_risk_alert"] = role == "doctor"
+            if obj is not None and obj.allergy_conflict:
+                extra_context["allergy_conflict_warning"] = True
         except Exception:
             pass
         return super().change_view(request, object_id, form_url, extra_context)
@@ -2718,7 +2486,7 @@ class AppointmentAdmin(admin.ModelAdmin):
     # ── Queryset ─────────────────────────────────────────────────────
 
     def get_queryset(self, request):
-        """Scope queryset by role — FR-P-4 / FR-P-5 / FR-N-1 / PBI-S4-07."""
+        """Scope queryset by role — FR-P-4 / FR-P-5 / FR-N-1."""
         qs = super().get_queryset(request)
         if request.user.is_superuser:
             return qs
@@ -2728,13 +2496,12 @@ class AppointmentAdmin(admin.ModelAdmin):
         if role == "admin":
             return qs
         if role == "patient":
+            # Ensure the Patient record exists before filtering
             request.user.profile.ensure_patient_record()
             return qs.filter(patient__user_profile=request.user.profile)
         if role == "nurse":
+            # FR-N-1: nurse sees only appointments for their assigned patients
             return qs.filter(patient__assigned_nurse=request.user.profile)
-        if role == "doctor":
-            # AC-07.1: doctor sees only appointments for their assigned patients
-            return qs.filter(patient__assigned_doctor=request.user.profile)
         return qs.none()
 
     # ── Permissions ──────────────────────────────────────────────────
@@ -2744,7 +2511,7 @@ class AppointmentAdmin(admin.ModelAdmin):
             return True
         if not hasattr(request.user, "profile"):
             return False
-        return request.user.profile.role in ["admin", "patient", "nurse", "doctor"]
+        return request.user.profile.role in ["admin", "patient", "nurse"]
 
     def has_view_permission(self, request, obj=None):
         if request.user.is_superuser:
@@ -2754,18 +2521,15 @@ class AppointmentAdmin(admin.ModelAdmin):
         role = request.user.profile.role
         if role == "admin":
             return True
-        if role == "doctor":
-            if obj is None:
-                return True
-            # AC-07.3: object-level check
-            return obj.patient.assigned_doctor == request.user.profile
         if role == "patient":
             if obj is None:
                 return True
+            # Object-level: only the patient's own appointments
             return obj.patient.user_profile == request.user.profile
         if role == "nurse":
             if obj is None:
                 return True
+            # Object-level: only appointments for the nurse's assigned patients
             return obj.patient.assigned_nurse == request.user.profile
         return False
 
@@ -2774,22 +2538,14 @@ class AppointmentAdmin(admin.ModelAdmin):
             return True
         if not hasattr(request.user, "profile"):
             return False
-        return request.user.profile.role in ["admin", "doctor"]
+        return request.user.profile.role == "admin"
 
     def has_change_permission(self, request, obj=None):
         if request.user.is_superuser:
             return True
         if not hasattr(request.user, "profile"):
             return False
-        role = request.user.profile.role
-        if role == "admin":
-            return True
-        if role == "doctor":
-            if obj is None:
-                return True
-            # AC-07.3: only change appointments for own patients
-            return obj.patient.assigned_doctor == request.user.profile
-        return False
+        return request.user.profile.role == "admin"
 
     def has_delete_permission(self, request, obj=None):
         if request.user.is_superuser:
@@ -2801,13 +2557,13 @@ class AppointmentAdmin(admin.ModelAdmin):
     # ── Role-aware overrides ──────────────────────────────────────────
 
     def get_list_filter(self, request):
-        """Patients get time filter; doctor/nurse/admin get status filter (AC-07.4)."""
+        """Patients get an upcoming/past time filter; nurse/admin get status filter."""
         if self._role(request) == "patient":
             return [AppointmentTimeFilter]
         return ["status"]
 
     def get_list_display(self, request):
-        """Role-appropriate appointment list (AC-07.4 / AC-10.*)."""
+        """Patients and nurses see a role-appropriate appointment list."""
         if self._role(request) == "patient":
             return [
                 "appointment_datetime",
@@ -2828,103 +2584,35 @@ class AppointmentAdmin(admin.ModelAdmin):
         return list(self.list_display)
 
     def get_readonly_fields(self, request, obj=None):
-        """Patients and nurses: all read-only. Doctor: limited to editable fields."""
+        """All fields are read-only for patients (AC-10.6) and nurses (AC-12.3)."""
         if self._role(request) in ("patient", "nurse"):
+            # All model field names + the virtual display helper
             model_fields = [
                 f.name for f in Appointment._meta.get_fields() if hasattr(f, "column")
             ]
             return list(set(model_fields + ["get_doctor_full_name"]))
-        if self._role(request) == "doctor":
-            # Doctor can edit notes, status, location, appointment_type (AC-07.2)
-            # but cannot change patient or doctor assignment
-            return list(self.readonly_fields) + [
-                "patient",
-                "doctor",
-                "appointment_datetime",
-            ]
         return list(self.readonly_fields)
 
     def get_fieldsets(self, request, obj=None):
-        """Patients: read-only summary. Doctor: editable clinical fields. Admin: full."""
+        """Patients see a read-only summary; nurses see all details read-only."""
         if self._role(request) == "patient":
             return self._patient_fieldsets
-        if self._role(request) == "doctor":
-            return (
-                (
-                    "Appointment Details",
-                    {
-                        "fields": (
-                            "patient",
-                            "doctor",
-                            "appointment_datetime",
-                            "appointment_type",
-                            "status",
-                        ),
-                        "description": "Patient and time are read-only. You can update status, type, location and notes.",
-                    },
-                ),
-                (
-                    "Location & Notes",
-                    {"fields": ("location", "notes")},
-                ),
-            )
         return self.fieldsets
 
     # ── FK filtering ─────────────────────────────────────────────────
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
-        """Restrict doctor FK dropdown; restrict patient dropdown for doctors."""
+        """Restrict doctor FK dropdown to doctor-role users only."""
         if db_field.name == "doctor":
             kwargs["queryset"] = UserProfile.objects.filter(role="doctor")
-        if db_field.name == "patient":
-            if (
-                not request.user.is_superuser
-                and hasattr(request.user, "profile")
-                and request.user.profile.role == "doctor"
-            ):
-                kwargs["queryset"] = Patient.objects.filter(
-                    assigned_doctor=request.user.profile
-                )
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
-    def save_model(self, request, obj, form, change):
-        """Audit-log create/update."""
-        if change and obj.pk:
-            try:
-                old_obj = self.model.objects.get(pk=obj.pk)
-                old_data = _snapshot(old_obj)
-            except self.model.DoesNotExist:
-                old_data = {}
-            super().save_model(request, obj, form, change)
-            _write_audit_log(
-                request, "update", obj, _build_changes_summary(old_data, _snapshot(obj))
-            )
-        else:
-            super().save_model(request, obj, form, change)
-            _write_audit_log(request, "create", obj)
 
-    def delete_model(self, request, obj):
-        """Audit-log delete."""
-        _write_audit_log(request, "delete", obj)
-        super().delete_model(request, obj)
-
-    def change_view(self, request, object_id, form_url="", extra_context=None):
-        """Audit-log read (AC-14.2)."""
-        extra_context = extra_context or {}
-        try:
-            obj = self.get_object(request, object_id)
-            if obj is not None:
-                _write_audit_log(request, "read", obj)
-        except Exception:
-            pass
-        return super().change_view(request, object_id, form_url, extra_context)
-
-
-# ── Custom AdminSite: role-based navigation filtering + stats dashboard ──────
+# ── Custom AdminSite: role-based navigation filtering (Task 2) ───────────────
 
 
 class CustomAdminSite(admin.AdminSite):
-    """Admin site subclass: nurse navigation filter (AC-04.1) + stats (AC-12.1/12.2)."""
+    """Admin site subclass that filters navigation for nurses (AC-04.1)."""
 
     def get_app_list(self, request, app_label=None):
         """Restrict nurse navigation to patient-care sections only (AC-04.1)."""
@@ -2933,6 +2621,7 @@ class CustomAdminSite(admin.AdminSite):
             hasattr(request.user, "profile") and request.user.profile.role == "nurse"
         ):
             return app_list
+        # Nurses see only these four models in navigation
         nurse_allowed = {"Patient", "Medication", "Appointment", "TestResult"}
         filtered = []
         for app in app_list:
@@ -2941,38 +2630,11 @@ class CustomAdminSite(admin.AdminSite):
                 filtered.append({**app, "models": models})
         return filtered
 
-    def index(self, request, extra_context=None):
-        """Inject aggregated statistics for admin role users (AC-12.1 / AC-12.2)."""
-        extra_context = extra_context or {}
-        if request.user.is_superuser or (
-            hasattr(request.user, "profile") and request.user.profile.role == "admin"
-        ):
-            try:
-                extra_context["stats"] = {
-                    "total_patients": UserProfile.objects.filter(
-                        role="patient"
-                    ).count(),
-                    "total_doctors": UserProfile.objects.filter(role="doctor").count(),
-                    "total_nurses": UserProfile.objects.filter(role="nurse").count(),
-                    "total_pharmacy": UserProfile.objects.filter(
-                        role="pharmacy"
-                    ).count(),
-                    "pending_orders": Medication.objects.filter(
-                        fulfillment_status="pending"
-                    ).count(),
-                }
-                extra_context["recent_audit_logs"] = AuditLog.objects.select_related(
-                    "user"
-                ).order_by("-timestamp")[:5]
-            except Exception:
-                pass
-        return super().index(request, extra_context)
-
 
 # Swap admin site class — preserves all existing registrations
 admin.site.__class__ = CustomAdminSite
 
-# ── Restrict Group admin to admins only (AC-04.2 / AC-11.1) ─────────────────
+# ── Restrict Group admin to admins only (AC-04.2) ────────────────────────────
 
 from django.contrib.auth.admin import GroupAdmin as BaseGroupAdmin  # noqa: E402
 
@@ -2983,17 +2645,7 @@ except admin.sites.NotRegistered:
 
 
 class CustomGroupAdmin(AdminOnlyMixin, BaseGroupAdmin):
-    """Groups section limited to admin role only (AC-04.2 / AC-11.1/11.2)."""
-
-    filter_horizontal = ("permissions",)
-
-    def get_list_display(self, request):
-        return ["name", "permission_count"]
-
-    def permission_count(self, obj):
-        return obj.permissions.count()
-
-    permission_count.short_description = "Permission Count"
+    """Groups section limited to admin role only (AC-04.2)."""
 
     def has_module_permission(self, request):
         if request.user.is_superuser:
@@ -3005,65 +2657,7 @@ class CustomGroupAdmin(AdminOnlyMixin, BaseGroupAdmin):
 
 admin.site.register(Group, CustomGroupAdmin)
 
-
-# ── AuditLog Admin (read-only, admin role only) — PBI-S4-16 ──────────────────
-
-
-@admin.register(AuditLog)
-class AuditLogAdmin(admin.ModelAdmin):
-    """Read-only audit trail viewer — admin role only (AC-16.1–16.5)."""
-
-    list_display = [
-        "timestamp",
-        "user",
-        "action",
-        "model_name",
-        "object_id",
-        "object_repr_short",
-        "ip_address",
-    ]
-    list_filter = ["action", "user", "model_name"]
-    date_hierarchy = "timestamp"
-    search_fields = ["user__username", "model_name", "object_repr", "ip_address"]
-    ordering = ["-timestamp"]
-
-    def get_readonly_fields(self, request, obj=None):
-        return [f.name for f in AuditLog._meta.get_fields() if hasattr(f, "column")]
-
-    def object_repr_short(self, obj):
-        text = obj.object_repr or ""
-        return text[:80] + ("…" if len(text) > 80 else "")
-
-    object_repr_short.short_description = "Object"
-
-    # Immutable — no add/change/delete for anyone
-
-    def has_add_permission(self, request):
-        return False
-
-    def has_change_permission(self, request, obj=None):
-        return False
-
-    def has_delete_permission(self, request, obj=None):
-        return False
-
-    def has_module_permission(self, request):
-        if request.user.is_superuser:
-            return True
-        if not hasattr(request.user, "profile"):
-            return False
-        return request.user.profile.role == "admin"
-
-    def has_view_permission(self, request, obj=None):
-        if request.user.is_superuser:
-            return True
-        if not hasattr(request.user, "profile"):
-            return False
-        return request.user.profile.role == "admin"
-
-
 # Re-register UserAdmin with role-based functionality
 admin.site.unregister(User)
 admin.site.register(User, UserAdmin)
 admin.site.register(UserProfile, UserProfileAdmin)
-# Note: AuditLog is registered via @admin.register decorator above
