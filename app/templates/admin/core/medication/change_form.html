@@ -7,14 +7,5 @@
     &#9888; Allergy conflict detected — this medication matches a recorded patient allergy. Verify before dispensing.
 </div>
 {% endif %}
-{% if show_risk_banner %}
-<div style="{% if risk_banner.level == 'CRITICAL' %}background:#f8d7da;border:2px solid #f5c6cb;color:#721c24;{% elif risk_banner.level == 'HIGH' %}background:#fff3cd;border:2px solid #ffc107;color:#856404;{% else %}background:#d1ecf1;border:2px solid #bee5eb;color:#0c5460;{% endif %}padding:12px 16px;margin-bottom:14px;border-radius:4px;">
-    <strong>&#9888; Drug-Allergy Risk: {{ risk_banner.level }}</strong>
-    (Score: {{ risk_banner.score }})
-    {% if risk_banner.allergen %} — Matched allergen: <strong>{{ risk_banner.allergen }}</strong>{% endif %}
-    {% if risk_banner.strategy %} via Strategy {{ risk_banner.strategy }}{% endif %}
-    {% if is_doctor_risk_alert %}<br><em>Doctor alert: review this prescription before saving.</em>{% endif %}
-</div>
-{% endif %}
 {{ block.super }}
 {% endblock %}
