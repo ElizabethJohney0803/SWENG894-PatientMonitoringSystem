@@ -100,15 +100,14 @@ class TestPatientAdminListDisplay:
     # ── doctor ──
 
     def test_doctor_sees_clinical_columns(self, doctor_user):
-        """Sprint 4 AC-05.2: doctor list shows medical_id, name, DOB, diagnoses, pending tests, next appt."""
         cols = self.admin.get_list_display(_request(self.factory, doctor_user))
         for col in [
             "medical_id",
             "get_patient_name",
-            "date_of_birth",
-            "get_diagnoses_short",
-            "get_pending_test_count",
-            "get_next_appointment",
+            "age",
+            "gender",
+            "blood_type",
+            "phone_primary",
         ]:
             assert col in cols, f"Doctor list display should include '{col}'"
 
@@ -199,10 +198,9 @@ class TestPatientAdminListFilter:
             assert f in filters
 
     def test_doctor_gets_clinical_filters(self, doctor_user):
-        """Sprint 4: doctor sees only their own patients so extra filters add no value (kept [])."""
         filters = self.admin.get_list_filter(_request(self.factory, doctor_user))
-        # Doctors already see only their assigned patients; empty filters is intentional
-        assert isinstance(filters, list)
+        assert "gender" in filters
+        assert "blood_type" in filters
 
     def test_doctor_does_not_get_assigned_doctor_filter(self, doctor_user):
         """Doctors only see their own patients so the assignment filter is useless."""
@@ -210,19 +208,18 @@ class TestPatientAdminListFilter:
         assert "assigned_doctor" not in filters
 
     def test_nurse_gets_clinical_and_state_filters(self, nurse_user):
-        """Nurse filter returns [] — nurses only see their assigned patients, extra filters not needed."""
         filters = self.admin.get_list_filter(_request(self.factory, nurse_user))
-        assert isinstance(filters, list)
+        for f in ["gender", "blood_type", "state"]:
+            assert f in filters, f"Nurse list filter should include '{f}'"
 
     def test_nurse_does_not_get_assignment_filter(self, nurse_user):
         filters = self.admin.get_list_filter(_request(self.factory, nurse_user))
         assert "assigned_doctor" not in filters
 
-    def test_pharmacy_gets_clinical_filters(self, pharmacy_user):
-        """Pharmacy sees all patients so clinical filters (gender, blood_type) are useful."""
-        filters = self.admin.get_list_filter(_request(self.factory, pharmacy_user))
-        assert "gender" in filters
-        assert "blood_type" in filters
+    def test_pharmacy_gets_same_filters_as_nurse(self, pharmacy_user, nurse_user):
+        nurse_f = self.admin.get_list_filter(_request(self.factory, nurse_user))
+        pharmacy_f = self.admin.get_list_filter(_request(self.factory, pharmacy_user))
+        assert nurse_f == pharmacy_f
 
     def test_patient_gets_no_filters(self, patient_user):
         """Patients see exactly one record; filters serve no purpose."""
@@ -561,15 +558,15 @@ class TestPatientAdminFieldsets:
 
     # ── pharmacy ──
 
-    def test_pharmacy_fieldsets_have_core_sections(self, pharmacy_user):
-        """Pharmacy fieldsets include the core patient sections."""
+    def test_pharmacy_fieldsets_match_nurse(self, pharmacy_user, nurse_user):
+        """Pharmacy and nurse see the identical section structure."""
+        nurse_titles = _fieldset_titles(
+            self.admin.get_fieldsets(_request(self.factory, nurse_user))
+        )
         pharmacy_titles = _fieldset_titles(
             self.admin.get_fieldsets(_request(self.factory, pharmacy_user))
         )
-        for section in ["Patient Identity", "Care Assignment", "Personal Information"]:
-            assert (
-                section in pharmacy_titles
-            ), f"Pharmacy fieldsets must include '{section}'"
+        assert nurse_titles == pharmacy_titles
 
 
 # ---------------------------------------------------------------------------
