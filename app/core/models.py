@@ -257,7 +257,10 @@ class Patient(models.Model):
 
     # Medical identification
     medical_id = models.CharField(
-        max_length=20, unique=True, help_text="Unique medical record identifier"
+        max_length=20,
+        unique=True,
+        db_index=True,
+        help_text="Unique medical record identifier",
     )
 
     # Personal information
@@ -620,6 +623,24 @@ class Medication(models.Model):
             "in the patient's recorded allergies — FR-Ph-4"
         ),
     )
+
+    RISK_LEVEL_CHOICES = [
+        ("critical", "Critical"),
+        ("high", "High"),
+        ("medium", "Medium"),
+        ("safe", "Safe"),
+    ]
+
+    risk_level = models.CharField(
+        max_length=10,
+        choices=RISK_LEVEL_CHOICES,
+        default="safe",
+        help_text="Drug-allergy risk classification — FR-Ph-4 / PBI-S4-17",
+    )
+    risk_score = models.IntegerField(
+        default=0,
+        help_text="Numeric risk score from DrugAllergyRiskEngine (0=safe, 50=medium, 75=high, 100=critical)",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -634,26 +655,25 @@ class Medication(models.Model):
             f"\u2014 {self.get_status_display()}"
         )
 
-    def _check_allergy_conflict(self):
+    def _run_allergy_engine(self):
         """
-        Return True if medication_name matches any entry in the patient's
-        allergies field (case-insensitive).  Returns False for blank/null
-        allergies so no false positives are generated.
+        Invoke DrugAllergyRiskEngine to compute risk_level and risk_score.
+        Sets allergy_conflict = True when risk_level != "safe".
         """
+        from core.services.drug_allergy_engine import DrugAllergyRiskEngine
+
         allergies_raw = getattr(self.patient, "allergies", "") or ""
-        if not allergies_raw.strip():
-            return False
-        med_name = self.medication_name.lower()
-        for allergy in allergies_raw.split(","):
-            if (
-                allergy.strip().lower() in med_name
-                or med_name in allergy.strip().lower()
-            ):
-                return True
-        return False
+        engine = DrugAllergyRiskEngine()
+        result = engine.evaluate(
+            medication_name=self.medication_name,
+            allergies_raw=allergies_raw,
+        )
+        self.risk_level = result.risk_level
+        self.risk_score = result.risk_score
+        self.allergy_conflict = result.risk_level != "safe"
 
     def save(self, *args, **kwargs):
-        self.allergy_conflict = self._check_allergy_conflict()
+        self._run_allergy_engine()
         super().save(*args, **kwargs)
 
     def clean(self):
@@ -865,3 +885,77 @@ class Appointment(models.Model):
 
 # Signal handlers removed - profile creation and group assignment
 # handled directly in admin forms and model save methods
+
+
+class AuditLog(models.Model):
+    """
+    Immutable audit trail for data access and modifications.
+
+    FR-P-8, FR-AA-2, FR-AA-3 — PBI-S4-13/14/15.
+    Records every read (detail-page view) and every create/update/delete
+    event across patient-sensitive models.
+    """
+
+    ACTION_CHOICES = [
+        ("read", "Read"),
+        ("create", "Create"),
+        ("update", "Update"),
+        ("delete", "Delete"),
+    ]
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="audit_logs",
+        help_text="User who performed the action",
+    )
+    action = models.CharField(
+        max_length=10,
+        choices=ACTION_CHOICES,
+        help_text="Type of action performed",
+    )
+    model_name = models.CharField(
+        max_length=100,
+        help_text="Django model class name that was accessed or changed",
+    )
+    object_id = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Primary key of the affected object",
+    )
+    object_repr = models.TextField(
+        blank=True,
+        help_text="String representation of the affected object at time of action",
+    )
+    ip_address = models.GenericIPAddressField(
+        null=True,
+        blank=True,
+        help_text="Client IP address extracted from REMOTE_ADDR",
+    )
+    timestamp = models.DateTimeField(
+        auto_now_add=True,
+        help_text="When the action occurred — set automatically, cannot be changed",
+    )
+    changes_summary = models.TextField(
+        blank=True,
+        help_text="JSON-encoded diff of old vs new field values for update events",
+    )
+
+    class Meta:
+        ordering = ["-timestamp"]
+        verbose_name = "Audit Log"
+        verbose_name_plural = "Audit Logs"
+
+    def __str__(self):
+        user_str = self.user.username if self.user else "anonymous"
+        return f"[{self.timestamp}] {user_str} {self.action} {self.model_name} #{self.object_id}"
+
+    def save(self, *args, **kwargs):
+        """Enforce immutability — existing records cannot be updated."""
+        if self.pk is not None:
+            raise ValidationError(
+                "AuditLog records are immutable and cannot be updated."
+            )
+        super().save(*args, **kwargs)
