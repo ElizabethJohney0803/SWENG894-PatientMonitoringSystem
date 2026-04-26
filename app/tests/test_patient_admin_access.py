@@ -12,6 +12,7 @@ import django
 django.setup()
 
 import pytest
+from datetime import date
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth.models import User
 from django.http import HttpRequest
@@ -43,10 +44,10 @@ class TestPatientAdminAccess:
         patient_record = Patient.objects.get(user_profile=patient_user.profile)
 
         # Add some test data
-        patient_record.date_of_birth = "1990-01-01"
+        patient_record.date_of_birth = date(1990, 1, 1)
         patient_record.gender = "M"
         patient_record.blood_type = "A+"
-        patient_record.phone_primary = "555-0123"
+        patient_record.phone_primary = "5550123456"
         patient_record.address_line1 = "123 Test St"
         patient_record.city = "Test City"
         patient_record.state = "TS"
@@ -420,18 +421,13 @@ class TestPatientAdminAcceptanceCriteria:
 
     def test_ac005_patient_auto_record_creation(self, patient_user):
         """AC-005: Patient record is automatically created for patient users."""
-        # Initially no Patient record
-        assert not Patient.objects.filter(user_profile=patient_user.profile).exists()
-
-        # Accessing admin should trigger auto-creation
-        request = RequestFactory().get("/admin/core/patient/")
-        request.user = patient_user
-
-        patient_admin = PatientAdmin(Patient, AdminSite())
-        patient_admin.changelist_view(request)
-
-        # Patient record should now exist
+        # Patient record is auto-created when UserProfile is saved (ensure_patient_record)
         assert Patient.objects.filter(user_profile=patient_user.profile).exists()
+
+        # The auto-created record should be associated with the profile
+        patient_record = patient_user.profile.patient_record
+        assert patient_record is not None
+        assert patient_record.user_profile == patient_user.profile
 
     def test_ac006_patient_gets_staff_status_for_admin_access(self):
         """AC-006: Patient users get staff status to access admin interface."""

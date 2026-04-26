@@ -369,7 +369,10 @@ class TestAssignPatientsCommandIntegration:
 
         # Create doctor and patients
         doctor_user = User.objects.create_user(
-            username="doctor_admin_int", password="pass"
+            username="doctor_admin_int",
+            first_name="Admin",
+            last_name="Doctor",
+            password="pass",
         )
         doctor_profile = UserProfile.objects.create(
             user=doctor_user, role="doctor", license_number="DOC_ADMIN_INT"
@@ -405,6 +408,7 @@ class TestAssignPatientsCommandIntegration:
         assert queryset.count() == 2
 
         for patient in patients:
+            patient.refresh_from_db()
             assert patient in queryset
             assert admin.get_assigned_doctor(patient) == doctor_user.get_full_name()
 

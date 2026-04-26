@@ -335,19 +335,18 @@ class TestPatientModel:
 
     def test_patient_creation_with_required_fields(self, patient_user):
         """Test Patient model includes all required fields."""
-        patient = Patient.objects.create(
-            user_profile=patient_user.profile,
-            date_of_birth=date(1990, 5, 15),
-            gender="M",
-            blood_type="O+",
-            insurance_number="INS123456",
-            address_line1="123 Main St",
-            city="Anytown",
-            state="CA",
-            postal_code="12345",
-            phone_primary="555-1234",
-            email_personal="patient@example.com",
-        )
+        patient = patient_user.profile.patient_record
+        patient.date_of_birth = date(1990, 5, 15)
+        patient.gender = "M"
+        patient.blood_type = "O+"
+        patient.insurance_number = "INS123456"
+        patient.address_line1 = "123 Main St"
+        patient.city = "Anytown"
+        patient.state = "CA"
+        patient.postal_code = "12345"
+        patient.phone_primary = "555-1234"
+        patient.email_personal = "patient@example.com"
+        patient.save()
 
         # Verify all required fields are properly stored
         assert patient.user_profile == patient_user.profile
@@ -365,16 +364,7 @@ class TestPatientModel:
 
     def test_patient_medical_id_generation(self, patient_user):
         """Test automatic medical ID generation in correct format."""
-        patient = Patient.objects.create(
-            user_profile=patient_user.profile,
-            date_of_birth=date(1985, 3, 20),
-            gender="F",
-            address_line1="456 Oak Ave",
-            city="Somewhere",
-            state="NY",
-            postal_code="67890",
-            phone_primary="555-5678",
-        )
+        patient = patient_user.profile.patient_record
 
         # Medical ID should be auto-generated in format PMR-YYYY-NNNNNN
         assert patient.medical_id.startswith(f"PMR-{date.today().year}-")
@@ -390,27 +380,8 @@ class TestPatientModel:
             user=user2, role="patient", phone="555-9999"
         )
 
-        patient1 = Patient.objects.create(
-            user_profile=patient_user.profile,
-            date_of_birth=date(1990, 1, 1),
-            gender="M",
-            address_line1="123 Main St",
-            city="City1",
-            state="CA",
-            postal_code="12345",
-            phone_primary="555-1111",
-        )
-
-        patient2 = Patient.objects.create(
-            user_profile=profile2,
-            date_of_birth=date(1985, 2, 2),
-            gender="F",
-            address_line1="456 Oak Ave",
-            city="City2",
-            state="NY",
-            postal_code="67890",
-            phone_primary="555-2222",
-        )
+        patient1 = patient_user.profile.patient_record
+        patient2 = profile2.patient_record
 
         # Medical IDs should be unique
         assert patient1.medical_id != patient2.medical_id
@@ -445,16 +416,9 @@ class TestPatientModel:
     def test_patient_age_calculation(self, patient_user):
         """Test age calculation property."""
         birth_date = date(1990, 5, 15)
-        patient = Patient.objects.create(
-            user_profile=patient_user.profile,
-            date_of_birth=birth_date,
-            gender="M",
-            address_line1="123 Main St",
-            city="Anytown",
-            state="CA",
-            postal_code="12345",
-            phone_primary="555-1234",
-        )
+        patient = patient_user.profile.patient_record
+        patient.date_of_birth = birth_date
+        patient.save()
 
         # Calculate expected age
         today = date.today()
@@ -468,18 +432,17 @@ class TestPatientModel:
 
     def test_patient_address_formatting(self, patient_user):
         """Test full address property formatting."""
-        patient = Patient.objects.create(
-            user_profile=patient_user.profile,
-            date_of_birth=date(1990, 1, 1),
-            gender="F",
-            address_line1="123 Main St",
-            address_line2="Apt 4B",
-            city="Anytown",
-            state="CA",
-            postal_code="12345",
-            country="United States",
-            phone_primary="555-1234",
-        )
+        patient = patient_user.profile.patient_record
+        patient.date_of_birth = date(1990, 1, 1)
+        patient.gender = "F"
+        patient.address_line1 = "123 Main St"
+        patient.address_line2 = "Apt 4B"
+        patient.city = "Anytown"
+        patient.state = "CA"
+        patient.postal_code = "12345"
+        patient.country = "United States"
+        patient.phone_primary = "555-1234"
+        patient.save()
 
         expected_address = "123 Main St, Apt 4B, Anytown, CA, 12345, United States"
         assert patient.full_address == expected_address
@@ -492,19 +455,17 @@ class TestPatientModel:
     def test_patient_phone_validation(self, patient_user):
         """Test phone number validation."""
         # Valid phone numbers
-        valid_phones = ["555-1234", "+1555123456", "5551234567"]
+        valid_phones = ["+15551234567", "+1555123456", "5551234567"]
 
+        patient = patient_user.profile.patient_record
         for phone in valid_phones:
-            patient = Patient(
-                user_profile=patient_user.profile,
-                date_of_birth=date(1990, 1, 1),
-                gender="M",
-                address_line1="123 Main St",
-                city="Anytown",
-                state="CA",
-                postal_code="12345",
-                phone_primary=phone,
-            )
+            patient.phone_primary = phone
+            patient.date_of_birth = date(1990, 1, 1)
+            patient.gender = "M"
+            patient.address_line1 = "123 Main St"
+            patient.city = "Anytown"
+            patient.state = "CA"
+            patient.postal_code = "12345"
             # Should not raise exception
             patient.full_clean()
 
@@ -538,16 +499,7 @@ class TestPatientModel:
 
     def test_patient_string_representation(self, patient_user):
         """Test patient string representation includes medical ID and name."""
-        patient = Patient.objects.create(
-            user_profile=patient_user.profile,
-            date_of_birth=date(1990, 1, 1),
-            gender="M",
-            address_line1="123 Main St",
-            city="Anytown",
-            state="CA",
-            postal_code="12345",
-            phone_primary="555-1234",
-        )
+        patient = patient_user.profile.patient_record
 
         expected = f"{patient.medical_id} - {patient_user.get_full_name()}"
         assert str(patient) == expected
@@ -561,17 +513,18 @@ class TestEmergencyContactModel:
 
     @pytest.fixture
     def sample_patient(self, patient_user):
-        """Create a sample patient for emergency contact tests."""
-        return Patient.objects.create(
-            user_profile=patient_user.profile,
-            date_of_birth=date(1990, 1, 1),
-            gender="M",
-            address_line1="123 Main St",
-            city="Anytown",
-            state="CA",
-            postal_code="12345",
-            phone_primary="555-1234",
-        )
+        """Get the auto-created sample patient for emergency contact tests."""
+        patient = patient_user.profile.patient_record
+        # Update with proper test data
+        patient.date_of_birth = date(1990, 1, 1)
+        patient.gender = "M"
+        patient.address_line1 = "123 Main St"
+        patient.city = "Anytown"
+        patient.state = "CA"
+        patient.postal_code = "12345"
+        patient.phone_primary = "555-1234"
+        patient.save()
+        return patient
 
     def test_emergency_contact_creation(self, sample_patient):
         """Test emergency contact creation with all required fields."""
@@ -710,7 +663,7 @@ class TestEmergencyContactModel:
 
     def test_emergency_contact_phone_validation(self, sample_patient):
         """Test emergency contact phone number validation."""
-        valid_phones = ["555-1234", "+1555123456", "5551234567"]
+        valid_phones = ["5551234567", "+15551234567", "5559876543"]
 
         for phone in valid_phones:
             contact = EmergencyContact(

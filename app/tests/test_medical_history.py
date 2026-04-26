@@ -598,9 +598,11 @@ class TestMedicationAdminPermissions:
         req = _make_request(self.factory, self.nurse_u)
         assert not self.ma.has_change_permission(req)
 
-    def test_pharmacy_cannot_change(self):
+    def test_pharmacy_can_change_limited_fields(self):
+        """Pharmacy can save notes/fulfillment_status but clinical fields are readonly."""
         req = _make_request(self.factory, self.pharm_u)
-        assert not self.ma.has_change_permission(req)
+        # Pharmacy CAN open the change form (to update notes / fulfillment_status)
+        assert self.ma.has_change_permission(req)
 
     # delete_permission
     def test_superuser_can_delete(self):
