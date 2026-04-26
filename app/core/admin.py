@@ -434,12 +434,20 @@ class UserProfileAdmin(PatientAccessMixin, admin.ModelAdmin):
         return user_role in allowed_roles
 
     def has_view_permission(self, request, obj=None):
-        """Deny nurse access to UserProfiles (AC-04.2)."""
+        """Deny nurse and patient access to UserProfiles (AC-04.2)."""
         if not hasattr(request.user, "profile"):
             return super().has_view_permission(request, obj)
-        if request.user.profile.role == "nurse":
+        if request.user.profile.role in ["nurse", "patient"]:
             return False
         return super().has_view_permission(request, obj)
+
+    def has_change_permission(self, request, obj=None):
+        """Deny nurse and patient access to change UserProfiles (AC-04.2)."""
+        if not hasattr(request.user, "profile"):
+            return super().has_change_permission(request, obj)
+        if request.user.profile.role in ["nurse", "patient"]:
+            return False
+        return super().has_change_permission(request, obj)
 
     def get_queryset(self, request):
         """Filter profiles based on role permissions."""
@@ -685,6 +693,30 @@ class EmergencyContactInline(admin.StackedInline):
                     # Patient trying to view another patient's data
                     return list(self.fields)
         return []
+
+    def has_view_permission(self, request, obj=None):
+        """Patients can view their own emergency contacts via inline."""
+        if hasattr(request.user, "profile") and request.user.profile.role == "patient":
+            return True
+        return super().has_view_permission(request, obj)
+
+    def has_add_permission(self, request, obj=None):
+        """Patients can add emergency contacts to their own record."""
+        if hasattr(request.user, "profile") and request.user.profile.role == "patient":
+            return True
+        return super().has_add_permission(request, obj)
+
+    def has_change_permission(self, request, obj=None):
+        """Patients can edit their own emergency contacts."""
+        if hasattr(request.user, "profile") and request.user.profile.role == "patient":
+            return True
+        return super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        """Patients can delete their own emergency contacts."""
+        if hasattr(request.user, "profile") and request.user.profile.role == "patient":
+            return True
+        return super().has_delete_permission(request, obj)
 
 
 class MedicationInline(admin.TabularInline):
@@ -1767,21 +1799,35 @@ class EmergencyContactAdmin(admin.ModelAdmin):
             return True
         if not hasattr(request.user, "profile"):
             return False
-        return request.user.profile.role in ["admin", "doctor"]
+        return request.user.profile.role in ["admin", "doctor", "patient"]
 
     def has_change_permission(self, request, obj=None):
         if request.user.is_superuser:
             return True
         if not hasattr(request.user, "profile"):
             return False
-        return request.user.profile.role in ["admin", "doctor"]
+        role = request.user.profile.role
+        if role in ["admin", "doctor"]:
+            return True
+        if role == "patient":
+            if obj is None:
+                return True
+            return obj.patient.user_profile == request.user.profile
+        return False
 
     def has_delete_permission(self, request, obj=None):
         if request.user.is_superuser:
             return True
         if not hasattr(request.user, "profile"):
             return False
-        return request.user.profile.role == "admin"
+        role = request.user.profile.role
+        if role == "admin":
+            return True
+        if role == "patient":
+            if obj is None:
+                return True
+            return obj.patient.user_profile == request.user.profile
+        return False
 
 
 class TestResultAdminForm(forms.ModelForm):
@@ -2266,7 +2312,13 @@ class MedicationAdmin(admin.ModelAdmin):
         "prescribing_doctor__user__last_name",
     ]
     ordering = ["status", "-start_date"]
-    readonly_fields = ["created_at", "updated_at"]
+    readonly_fields = [
+        "allergy_conflict",
+        "risk_level",
+        "risk_score",
+        "created_at",
+        "updated_at",
+    ]
 
     fieldsets = (
         (
@@ -2284,6 +2336,17 @@ class MedicationAdmin(admin.ModelAdmin):
                     "fulfillment_status",
                     "notes",
                 )
+            },
+        ),
+        (
+            "Drug–Allergy Risk Assessment",
+            {
+                "fields": ("allergy_conflict", "risk_level", "risk_score"),
+                "description": (
+                    "Auto-calculated by the Drug–Allergy Risk Scoring Engine on every save. "
+                    "CRITICAL = exact name match (100), HIGH = drug-class cross-reactivity (75), "
+                    "MEDIUM = fuzzy match (50), SAFE = no conflict (0)."
+                ),
             },
         ),
         (
@@ -2419,7 +2482,8 @@ class MedicationAdmin(admin.ModelAdmin):
                 return True
             return obj.patient.assigned_doctor == request.user.profile
         if role == "pharmacy":
-            # Pharmacy can edit the notes field only (FR-Ph-2 / AC-02.1)
+            # Pharmacy can update notes and fulfillment_status (see get_readonly_fields).
+            # obj=None means changelist — allow to show edit link.
             return True
         return False
 
@@ -2455,6 +2519,8 @@ class MedicationAdmin(admin.ModelAdmin):
                     "fulfillment_status",
                     "notes",
                     "allergy_conflict",
+                    "risk_level",
+                    "risk_score",
                 ]
         return base
 
@@ -2521,7 +2587,7 @@ class MedicationAdmin(admin.ModelAdmin):
         super().delete_model(request, obj)
 
     def change_view(self, request, object_id, form_url="", extra_context=None):
-        """Audit-log read entry on medication detail page (AC-14.2)."""
+        """Audit-log read entry on medication detail page (AC-14.2); inject risk banner."""
         extra_context = extra_context or {}
         try:
             obj = self.get_object(request, object_id)
@@ -2529,6 +2595,13 @@ class MedicationAdmin(admin.ModelAdmin):
                 _write_audit_log(request, "read", obj)
                 if obj.allergy_conflict:
                     extra_context["allergy_conflict_warning"] = True
+                # Inject structured risk banner for pharmacy and doctor (AC-17.6 / AC-17.7)
+                if obj.risk_level != "safe":
+                    extra_context["drug_allergy_risk"] = {
+                        "level": obj.risk_level,
+                        "score": obj.risk_score,
+                        "display": obj.get_risk_level_display(),
+                    }
         except Exception:
             pass
         return super().change_view(request, object_id, form_url, extra_context)
@@ -2899,7 +2972,7 @@ class AppointmentAdmin(admin.ModelAdmin):
 
 
 class CustomAdminSite(admin.AdminSite):
-    """Admin site subclass: nurse navigation filter (AC-04.1)."""
+    """Admin site subclass: nurse navigation filter (AC-04.1) + dashboard stats (AC-12.1/12.2)."""
 
     def get_app_list(self, request, app_label=None):
         """Restrict nurse navigation to patient-care sections only (AC-04.1)."""
@@ -2915,6 +2988,35 @@ class CustomAdminSite(admin.AdminSite):
             if models:
                 filtered.append({**app, "models": models})
         return filtered
+
+    def index(self, request, extra_context=None):
+        """Override index to inject statistics panel for admin role (AC-12.1/12.2)."""
+        extra_context = extra_context or {}
+        is_admin = request.user.is_superuser or (
+            hasattr(request.user, "profile") and request.user.profile.role == "admin"
+        )
+        if is_admin:
+            try:
+                from .models import Patient, UserProfile, Medication, AuditLog as AL
+
+                stats = {
+                    "total_patients": Patient.objects.count(),
+                    "total_doctors": UserProfile.objects.filter(role="doctor").count(),
+                    "total_nurses": UserProfile.objects.filter(role="nurse").count(),
+                    "total_pharmacy": UserProfile.objects.filter(
+                        role="pharmacy"
+                    ).count(),
+                    "pending_medications": Medication.objects.filter(
+                        fulfillment_status="pending"
+                    ).count(),
+                    "recent_audit_logs": AL.objects.select_related("user").order_by(
+                        "-timestamp"
+                    )[:5],
+                }
+                extra_context["admin_stats"] = stats
+            except Exception:
+                pass
+        return super().index(request, extra_context)
 
 
 # Swap admin site class — preserves all existing registrations
@@ -2952,6 +3054,64 @@ class CustomGroupAdmin(AdminOnlyMixin, BaseGroupAdmin):
 
 
 admin.site.register(Group, CustomGroupAdmin)
+
+
+# ── Audit Log Admin — read-only compliance viewer (PBI-S4-16) ────────────────
+
+
+@admin.register(AuditLog)
+class AuditLogAdmin(AdminOnlyMixin, admin.ModelAdmin):
+    """
+    Read-only audit log viewer for compliance and security tracking — PBI-S4-16.
+    Accessible to admin role only.  No add, change, or delete permitted for any role.
+    """
+
+    list_display = [
+        "timestamp",
+        "user",
+        "action",
+        "model_name",
+        "object_id",
+        "object_repr",
+        "ip_address",
+    ]
+    list_filter = ["action", "user", "model_name"]
+    date_hierarchy = "timestamp"
+    ordering = ["-timestamp"]
+    search_fields = ["user__username", "model_name", "object_repr", "object_id"]
+    readonly_fields = [
+        "timestamp",
+        "user",
+        "action",
+        "model_name",
+        "object_id",
+        "object_repr",
+        "ip_address",
+        "changes_summary",
+    ]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def has_module_permission(self, request):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role == "admin"
+
+    def has_view_permission(self, request, obj=None):
+        if request.user.is_superuser:
+            return True
+        if not hasattr(request.user, "profile"):
+            return False
+        return request.user.profile.role == "admin"
 
 
 # Re-register UserAdmin with role-based functionality

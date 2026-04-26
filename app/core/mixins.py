@@ -205,14 +205,11 @@ class DoctorOnlyMixin(RoleBasedAdminMixin):
             # Filter to only show records related to patients assigned to this doctor
             model = queryset.model
             if hasattr(model, "assigned_doctor"):
-                # Direct patient assignment
+                # Direct patient assignment (Patient model)
                 return queryset.filter(assigned_doctor=request.user.profile)
-            elif hasattr(model, "patient__assigned_doctor"):
-                # Related through patient (e.g., EmergencyContact)
+            elif hasattr(model, "patient"):
+                # Related through patient FK (e.g., EmergencyContact, Medication)
                 return queryset.filter(patient__assigned_doctor=request.user.profile)
-            elif hasattr(model, "user_profile") and model.__name__ == "Patient":
-                # Patient model filtering
-                return queryset.filter(assigned_doctor=request.user.profile)
         return queryset
 
     def check_role_permission(self, request, obj, action):

@@ -624,6 +624,23 @@ class Medication(models.Model):
         ),
     )
 
+    RISK_LEVEL_CHOICES = [
+        ("critical", "Critical"),
+        ("high", "High"),
+        ("medium", "Medium"),
+        ("safe", "Safe"),
+    ]
+    risk_level = models.CharField(
+        max_length=10,
+        choices=RISK_LEVEL_CHOICES,
+        default="safe",
+        help_text="Drug-allergy risk classification from the DrugAllergyRiskEngine — PBI-S4-17",
+    )
+    risk_score = models.IntegerField(
+        default=0,
+        help_text="Numeric risk score: 100=critical, 75=high, 50=medium, 0=safe — PBI-S4-17",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -639,27 +656,27 @@ class Medication(models.Model):
         )
 
     def _check_allergy_conflict(self):
-        """Check if medication name conflicts with patient's recorded allergies."""
-        import re
+        """
+        Evaluate drug-allergy risk using the DrugAllergyRiskEngine (PBI-S4-17).
+        Sets risk_level, risk_score, and allergy_conflict on this instance.
+        Falls back to safe/0/False when patient or allergies data is absent.
+        """
+        from .services.drug_allergy_engine import DrugAllergyRiskEngine
 
         if not self.patient or not self.patient.allergies:
+            self.risk_level = "safe"
+            self.risk_score = 0
             self.allergy_conflict = False
             return
-        allergies_raw = self.patient.allergies or ""
-        med_norm = self.medication_name.lower().strip()
-        tokens = [
-            t.strip().lower() for t in re.split(r"[,;/\n]", allergies_raw) if t.strip()
-        ]
-        for allergen in tokens:
-            if not allergen:
-                continue
-            if allergen == med_norm:
-                self.allergy_conflict = True
-                return
-            if len(allergen) >= 3 and (allergen in med_norm or med_norm in allergen):
-                self.allergy_conflict = True
-                return
-        self.allergy_conflict = False
+
+        engine = DrugAllergyRiskEngine()
+        result = engine.evaluate(
+            medication_name=self.medication_name,
+            allergies_raw=self.patient.allergies,
+        )
+        self.risk_level = result.risk_level
+        self.risk_score = result.risk_score
+        self.allergy_conflict = result.risk_level != "safe"
 
     def save(self, *args, **kwargs):
         self._check_allergy_conflict()
